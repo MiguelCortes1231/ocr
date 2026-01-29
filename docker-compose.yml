@@ -1,0 +1,38 @@
+version: "3.9"
+
+services:
+  ine-ocr-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ine-ocr-api
+    # ⚠️ Apple Silicon (M1/M2): si tienes problemas con paddle, descomenta:
+    # platform: linux/amd64
+
+    ports:
+      - "5001:5001"
+
+    # 🧠 Cache de modelos OCR (evita descargas en cada rebuild)
+    volumes:
+      - paddleocr_cache:/root/.paddleocr
+      - paddlex_cache:/root/.paddlex
+
+    environment:
+      # 🧪 Ajustes opcionales
+      - APP_HOST=0.0.0.0
+      - APP_PORT=5001
+      - GUNICORN_WORKERS=1
+      - GUNICORN_THREADS=4
+      - GUNICORN_TIMEOUT=120
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:5001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+volumes:
+  paddleocr_cache:
+  paddlex_cache:
