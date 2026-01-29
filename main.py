@@ -15,8 +15,87 @@
 
 🧠 Debug:
 - POST /ocr?debug=1 -> incluye "_ocr_texts" (líneas crudas ya normalizadas)
-"""
 
+──────────────────────────────────────────────────────────────────────────────
+📚 DOCUMENTACIÓN EXTENDIDA (estilo “AngularDoc” pero en Python) 🧩✨
+──────────────────────────────────────────────────────────────────────────────
+
+🎯 Objetivo general
+Este archivo define un API HTTP (Flask) para:
+1) 📸 Recibir imágenes de INE/IFE vía multipart/form-data.
+2) 🔎 Ejecutar OCR con PaddleOCR para obtener texto (líneas).
+3) 🧠 Normalizar y “limpiar” el texto para minimizar errores típicos de OCR.
+4) 🧩 Extraer campos clave del ANVERSO (nombre, CURP, clave de elector, etc.).
+5) 🔙 Extraer campos del REVERSO cuando viene MRZ (líneas tipo "IDMEX...").
+6) 🖼️ Ofrecer un endpoint de mejora de imagen (recorte + contraste/nitidez)
+   para aumentar el porcentaje de aciertos del OCR.
+
+🧱 Mapa mental del archivo (por secciones)
+A) ⚙️ Configuración (Flask + CORS + Swagger)
+   - app = Flask(__name__)
+   - CORS(...) para permitir consumo desde web/mobile
+   - Swagger(...) para /apidocs/ con Flasgger
+
+B) 🔎 Motor OCR (PaddleOCR)
+   - ocr = PaddleOCR(...) configurado en español (lang="es")
+   - Se desactivan clasificadores/orientación para mantener tu config estable ✅
+
+C) 🧩 Helpers de extracción (regex + normalización)
+   - buscar_en_lista(pattern, lista) 🔍: encuentra el primer match regex
+   - buscar_seccion(lista) 🧾: detecta sección electoral de 4 dígitos
+   - normalizar_textos(texts) 🧼: limpia espacios, trims, filtra vacíos
+
+D) 👤 Extracción robusta de NOMBRE (anverso)
+   - _es_linea_candidata_nombre(line) 🧪: heurística para decidir si “parece nombre”
+     (rechaza números, headers del INE, símbolos raros, etc.)
+   - _limpiar_nombre_pieza(s) 🧽: normaliza espacios y quita puntuación al inicio/fin
+   - extraer_nombre_completo(texts) 👤: arma el nombre completo usando:
+       1) label “NOMBRE” aunque esté mal leído (NOM8RE, N0MBRE, etc.)
+       2) ventana entre NOMBRE y DOMICILIO (máx 4 líneas)
+       3) refuerzo si detecta solo 1 línea (completa con líneas arriba)
+       4) fallback usando DOMICILIO como ancla o primeras líneas candidatas
+
+E) 🪪 Extracción ANVERSO (INE)
+   - extraer_campos_ine(texts) 🪪: devuelve un dict con:
+     es_ine, nombre, curp, clave_elector, fecha_nacimiento, etc.
+     + domicilio (calle/colonia/estado) con heurística basada en “DOMICILIO”
+     + código postal (5 dígitos) y número exterior/interior (heurístico)
+
+F) 🔙 Extracción REVERSO (MRZ)
+   - extraer_campos_reverso(texto) 🔙:
+     valida formato MRZ (3 líneas, línea1 empieza con "IDMEX")
+     y separa apellido paterno/materno/nombres desde la tercera línea (con '<')
+
+G) 🖼️ Lectura y mejora de imagen
+   - leer_imagen_desde_request(field_name="imagen") 🖼️:
+     decodifica la imagen enviada en request.files a OpenCV (BGR)
+   - _order_points(pts) 🧭: ordena puntos (tl, tr, br, bl)
+   - _four_point_transform(image, pts) 📐: warp de perspectiva
+   - auto_recortar_ine(img_bgr) ✂️: detecta contorno tipo credencial y corrige
+   - mejorar_para_ocr(img_bgr) 🧠: upscale + denoise + CLAHE + unsharp
+   - pipeline_mejora_ine(img_bgr) 🧪: recorte + mejora (combinación final)
+
+H) 🚀 Endpoints Flask (API pública)
+   - POST /enhance 🖼️: retorna PNG mejorado para luego usar /ocr o /ocrreverso
+   - POST /ocr 🪪: OCR del anverso y extracción de campos (JSON)
+   - POST /ocrreverso 🔙: OCR del reverso (MRZ) y extracción (JSON)
+
+I) ▶️ Ejecución
+   - if __name__ == "__main__": app.run(...)
+
+🧠 Nota importante sobre “no cambiar el código”
+✅ Todo lo anterior es **solo documentación** (docstring del módulo).
+✅ El comportamiento del API NO cambia: no se alteran imports, funciones ni lógica.
+✅ Esta sección sirve como “manual del archivo” para entenderlo completo.
+
+✨ Sugerencia de uso (rápida)
+- Levanta el server: python main.py
+- Swagger UI: http://localhost:5001/apidocs/
+- Probar OCR: POST /ocr con form-data: imagen=@frente.jpg
+- Probar reverso: POST /ocrreverso con form-data: imagen=@reverso.jpg
+- Mejorar: POST /enhance con form-data: imagen=@foto.jpg
+
+"""
 from __future__ import annotations
 
 from flask import Flask, request, jsonify, send_file
