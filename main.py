@@ -137,36 +137,47 @@ def _build_ocr_engine() -> PaddleOCR:
 # ============================================================
 # 🏷️ CLASIFICACIÓN DE TIPO DE CREDENCIAL
 # ============================================================
-def clasificar_tipo_credencial(texts: List[str]) -> str:
+def clasificar_tipo_credencial(textos_limpios: List[str]) -> str:
     """
-    🔍 Clasifica la credencial en tipo C, D o GM basado en patrones.
-    
-    Reglas:
-    - GM: Tiene "INSTITUTO NACIONAL ELECTORAL" y estructura específica
-    - D: Tiene "INSTITUTO NACIONAL ELECTORAL" pero formato diferente
-    - C: Tiene "INSTITUTO FEDERAL ELECTORAL" (más antiguo)
+    🪪 Clasifica el tipo de credencial INE.
+
+    ✅ FIX:
+    - Antes: dependías de "CLAVE DE ELECTOR" exacto (OCR falla con espacios/pegado)
+    - Ahora: detecta de forma flexible:
+        - CLAVE\s*DE\s*ELECTOR
+        - o que aparezcan CLAVE y ELECTOR en el texto
+        - o que el patrón de "CLAVE DE ELECTOR" venga incompleto pero cercano
     """
-    textos_upper = [t.upper() for t in texts]
-    texto_completo = " ".join(textos_upper)
-    
-    # Patrones para identificar tipo
-    tiene_ine = "INSTITUTO NACIONAL ELECTORAL" in texto_completo
-    tiene_ife = "INSTITUTO FEDERAL ELECTORAL" in texto_completo
-    tiene_credencial_para_votar = "CREDENCIAL PARA VOTAR" in texto_completo
-    tiene_mrz_idmex = "IDMEX" in texto_completo
-    
-    # Heurísticas para diferenciar GM vs D
+
+    # Unificar a un solo texto para búsqueda flexible
+    texto_completo = " ".join([t.upper().strip() for t in textos_limpios if t]).strip()
+
+    # Detectores base INE
+    tiene_ine = "INSTITUTO" in texto_completo and "ELECTORAL" in texto_completo
+    tiene_credencial_para_votar = "CREDENCIAL" in texto_completo and "VOTAR" in texto_completo
+
+    # Heurísticas que suelen aparecer en anverso INE
+    tiene_curp = "CURP" in texto_completo or re.search(r'\b[A-Z]{4}\d{6}[HMX][A-Z]{5,6}[0-9A-Z]\b', texto_completo) is not None
+
+    # ✅ "CLAVE DE ELECTOR" flexible (OCR puede pegar o meter espacios raros)
+    tiene_clave_elector_flexible = (
+        re.search(r'CLAVE\s*DE\s*ELECTOR', texto_completo) is not None
+        or ("CLAVE" in texto_completo and "ELECTOR" in texto_completo)
+        or re.search(r'CLAVE\s*DE\s*ELEC', texto_completo) is not None
+    )
+
+    # ✅ GM suele tener formato organizado y casi siempre tiene CURP + clave elector
+    # Si hay INE + credencial para votar + (clave elector flexible), es GM
+    if tiene_ine and tiene_credencial_para_votar and tiene_clave_elector_flexible:
+        return "GM"
+
+    # Si es INE pero no detectamos la clave elector, lo dejamos como D (tu compatibilidad actual)
     if tiene_ine and tiene_credencial_para_votar:
-        # GM suele tener "CLAVE DE ELECTOR" y estructura más organizada
-        if "CLAVE DE ELECTOR" in texto_completo:
-            return "GM"
-        else:
-            return "D"
-    elif tiene_ife:
-        return "C"
-    
-    # Por defecto, si no se identifica claramente
+        return "D"
+
+    # Si no es claramente INE, devolvemos "D" por default (no romper tu pipeline)
     return "D"
+
 
 
 # ============================================================
@@ -315,103 +326,86 @@ def limpiar_y_validar_nombre(nombre: str) -> str:
 # ============================================================
 def extraer_nombre_mejorado(texts: List[str], tipo_credencial: str) -> str:
     """
-    👤 Extrae y limpia el nombre según el tipo de credencial.
+    👤 Extrae el nombre completo desde los textos OCR.
 
-    ✅ FIX GM robusto:
-    - Si OCR NO detecta bien "NOMBRE", usamos un ancla: "DOMICILIO"
-      y tomamos las líneas inmediatamente anteriores como nombre (2-4 líneas).
-    - Evita devolver encabezados tipo: "INSTITUTO NACIONAL ELECTORAL".
+    ✅ FIX:
+    - En GM el nombre puede venir en 2-3 líneas separadas:
+        NOMBRE
+        CASTILLO
+        OLIVERA
+        RICARDO ORLANDO
+    - Si OCR no detecta "NOMBRE", usamos ANCLA "DOMICILIO" y tomamos líneas antes.
+    - Evita falsos positivos como "INSTITUTO NACIONAL ELECTORAL".
     """
     textos_limpios = normalizar_textos(texts)
 
+    # 🚫 Palabras que NO deben considerarse como parte del nombre
+    blacklist_regex = r'(INSTITUTO|NACIONAL|ELECTORAL|CREDENCIAL|PARA\s+VOTAR|M[EÉ]XICO|ESTADOS\s+UNIDOS)'
+    stop_labels_regex = r'(DOMICILIO|CLAVE|CURP|FECHA|SECCI[ÓO]N|AÑO|REGISTRO|VIGENCIA|SEXO)'
+
     # ============================================================
-    # 🪪 ESTRATEGIA GM (prioritaria)
+    # ✅ ESTRATEGIA 0 (UNIVERSAL): ANCLA POR "DOMICILIO"
+    # - Funciona MUY bien en INE GM (y en general)
+    # - Toma 2-4 líneas antes de DOMICILIO como nombre
+    # ============================================================
+    idx_dom = None
+    for i, line in enumerate(textos_limpios):
+        if "DOMICILIO" in line.upper():
+            idx_dom = i
+            break
+
+    if idx_dom is not None:
+        ventana = textos_limpios[max(0, idx_dom - 12):idx_dom]
+        candidatos = []
+
+        for s in ventana:
+            s = s.strip()
+            up = s.upper().strip()
+
+            if not s:
+                continue
+            if re.fullmatch(r'NOMBRE', up):
+                continue
+            if re.search(stop_labels_regex, up):
+                continue
+            if re.search(blacklist_regex, up):
+                continue
+            if any(ch.isdigit() for ch in up):
+                continue
+            # Evitar líneas muy cortas o ruido
+            if len(re.sub(r'[^A-ZÁÉÍÓÚÜÑ]', '', up)) < 2:
+                continue
+
+            candidatos.append(s)
+
+        # Devolver las últimas 2-4 líneas como nombre completo
+        if candidatos:
+            nombre_candidato = " ".join(candidatos[-4:]).strip()
+            if len(nombre_candidato.split()) >= 2:
+                return nombre_candidato
+
+    # ============================================================
+    # 🪪 ESTRATEGIA GM: "NOMBRE" + nombre en varias líneas
     # ============================================================
     if tipo_credencial == "GM":
-
-        # 🚫 Frases/etiquetas que NO son nombre
-        blacklist_regex = r'(INSTITUTO|NACIONAL|ELECTORAL|CREDENCIAL|PARA\s+VOTAR|M[EÉ]XICO|ESTADOS\s+UNIDOS)'
-        stop_labels_regex = r'(DOMICILIO|CLAVE|CURP|FECHA|SECCI[ÓO]N|AÑO|VIGENCIA|SEXO)'
-
-        # ------------------------------------------------------------
-        # ✅ ESTRATEGIA 0 (NUEVA): ANCLA POR "DOMICILIO"
-        # Toma 2–4 líneas ANTES de "DOMICILIO" como nombre
-        # ------------------------------------------------------------
-        idx_dom = None
         for i, line in enumerate(textos_limpios):
-            if "DOMICILIO" in line.upper():
-                idx_dom = i
-                break
+            up = line.upper().strip()
 
-        if idx_dom is not None:
-            # Revisar hasta 8 líneas antes de DOMICILIO
-            ventana = textos_limpios[max(0, idx_dom - 10):idx_dom]
-
-            # Filtrar basura/encabezados
-            candidatos = []
-            for s in ventana:
-                s_clean = s.strip()
-                s_up = s_clean.upper()
-
-                if not s_clean:
-                    continue
-
-                # saltar etiquetas
-                if re.search(stop_labels_regex, s_up):
-                    continue
-
-                # saltar encabezados institucionales
-                if re.search(blacklist_regex, s_up):
-                    continue
-
-                # saltar si tiene números
-                if any(ch.isdigit() for ch in s_up):
-                    continue
-
-                # saltar si es demasiado corto (ruido)
-                if len(re.sub(r'[^A-ZÁÉÍÓÚÜÑ]', '', s_up)) < 2:
-                    continue
-
-                # saltar si literal dice NOMBRE
-                if re.fullmatch(r'NOMBRE', s_up):
-                    continue
-
-                candidatos.append(s_clean)
-
-            # Queremos las ÚLTIMAS 2-4 líneas antes de DOMICILIO (ahí suele estar el nombre)
-            if candidatos:
-                partes = candidatos[-4:]  # máximo 4 líneas
-                nombre_candidato = " ".join(partes).strip()
-
-                # Validación mínima: 2+ palabras
-                if len(nombre_candidato.split()) >= 2:
-                    return nombre_candidato
-
-        # ------------------------------------------------------------
-        # ✅ Caso A: "NOMBRE" en línea sola y el nombre viene abajo en varias líneas
-        # ------------------------------------------------------------
-        for i, line in enumerate(textos_limpios):
-            line_upper = line.upper().strip()
-
-            if re.fullmatch(r'^NOMBRE\s*$', line_upper):
+            if re.fullmatch(r'^NOMBRE\s*$', up):
                 partes: List[str] = []
 
-                for j in range(i + 1, min(i + 6, len(textos_limpios))):
+                for j in range(i + 1, min(i + 7, len(textos_limpios))):
                     s = textos_limpios[j].strip()
                     s_up = s.upper().strip()
 
                     if re.search(stop_labels_regex, s_up):
                         break
-
-                    if not s:
-                        continue
-
                     if re.search(blacklist_regex, s_up):
                         continue
-
+                    if not s:
+                        continue
                     if any(ch.isdigit() for ch in s_up):
                         continue
-
                     if len(re.sub(r'[^A-ZÁÉÍÓÚÜÑ]', '', s_up)) < 2:
                         continue
 
@@ -421,53 +415,22 @@ def extraer_nombre_mejorado(texts: List[str], tipo_credencial: str) -> str:
                 if len(nombre_candidato.split()) >= 2:
                     return nombre_candidato
 
-        # ------------------------------------------------------------
-        # ✅ Caso B: "NOMBRE: JUAN PEREZ ..." en misma línea
-        # ------------------------------------------------------------
+        # "NOMBRE: ..." misma línea
         for line in textos_limpios:
-            line_upper = line.upper()
-            match = re.search(r'NOMBRE\s*[:\-]?\s*([A-ZÁÉÍÓÚÜÑ\s\.]{3,})', line_upper)
-            if match:
-                nombre_candidato = match.group(1).strip()
+            up = line.upper()
+            m = re.search(r'NOMBRE\s*[:\-]?\s*([A-ZÁÉÍÓÚÜÑ\s\.]{3,})', up)
+            if m:
+                nombre_candidato = m.group(1).strip()
+                nc_up = nombre_candidato.upper()
 
-                if (nombre_candidato and
-                    not re.search(stop_labels_regex, nombre_candidato.upper()) and
-                    not re.search(blacklist_regex, nombre_candidato.upper()) and
-                    not any(ch.isdigit() for ch in nombre_candidato) and
-                    len(nombre_candidato.split()) >= 2):
+                if (len(nombre_candidato.split()) >= 2 and
+                    not re.search(stop_labels_regex, nc_up) and
+                    not re.search(blacklist_regex, nc_up) and
+                    not any(ch.isdigit() for ch in nc_up)):
                     return nombre_candidato
 
-        # Si GM falla, seguimos con fallback general
-
     # ============================================================
-    # 🧠 ESTRATEGIA GENERAL (C/D o fallback)
-    # ============================================================
-    patrones_nombre = [
-        r'NOMBRE[:\s\-]*([A-ZÁÉÍÓÚÜÑ\s\.]{5,})',
-        r'^([A-ZÁÉÍÓÚÜÑ]{2,}\s+[A-ZÁÉÍÓÚÜÑ]{2,}(?:\s+[A-ZÁÉÍÓÚÜÑ]{2,}){0,3})$'
-    ]
-
-    for patron in patrones_nombre:
-        for line in textos_limpios:
-            up = line.upper().strip()
-
-            # evitar encabezados institucionales
-            if re.search(r'(INSTITUTO|NACIONAL|ELECTORAL|CREDENCIAL|PARA\s+VOTAR|M[EÉ]XICO)', up):
-                continue
-
-            match = re.search(patron, up)
-            if match:
-                nombre = match.group(1).strip() if match.groups() else match.group(0).strip()
-
-                if (nombre and
-                    len(nombre.split()) >= 2 and
-                    not re.search(r'(DOMICILIO|CLAVE|CURP|FECHA|SECCI[ÓO]N|AÑO|REGISTRO|VIGENCIA|SEXO)', nombre.upper()) and
-                    not re.search(r'(INSTITUTO|NACIONAL|ELECTORAL|CREDENCIAL|PARA\s+VOTAR|M[EÉ]XICO)', nombre.upper()) and
-                    not any(ch.isdigit() for ch in nombre)):
-                    return nombre
-
-    # ============================================================
-    # 🧨 FALLBACK FINAL (último recurso)
+    # 🧠 FALLBACK GENERAL (para otros tipos o casos raros)
     # ============================================================
     candidatos = []
     for line in textos_limpios:
@@ -476,9 +439,9 @@ def extraer_nombre_mejorado(texts: List[str], tipo_credencial: str) -> str:
             continue
         if len(up.split()) < 2:
             continue
-        if re.search(r'(DOMICILIO|CLAVE|CURP|FECHA|SECCI[ÓO]N|AÑO|REGISTRO|VIGENCIA|SEXO)', up):
+        if re.search(stop_labels_regex, up):
             continue
-        if re.search(r'(INSTITUTO|NACIONAL|ELECTORAL|CREDENCIAL|PARA\s+VOTAR|M[EÉ]XICO)', up):
+        if re.search(blacklist_regex, up):
             continue
         if any(ch.isdigit() for ch in up):
             continue
