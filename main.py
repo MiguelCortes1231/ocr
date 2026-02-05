@@ -1,45 +1,16 @@
 """
-🪪 INE/IFE OCR API (Flask + PaddleOCR) 🇲🇽
+🪪 INE/IFE OCR API MEJORADO 🇲🇽
 =================================================
 
-✅ ¿Qué hace este API?
-- Recibe una imagen (multipart/form-data) del **anverso** o **reverso** de una credencial INE.
-- Usa PaddleOCR para extraer texto.
-- Aplica heurísticas + regex para extraer campos relevantes.
-- Expone Swagger UI con Flasgger para documentación y pruebas rápidas.
+✅ MEJORAS IMPLEMENTADAS:
+1. Clasificación automática de tipo de credencial (C, D, GM)
+2. Validación y completado de datos desde CURP y Clave de Elector
+3. Mejora en extracción de nombre (filtra palabras erróneas)
+4. Reglas específicas por tipo de credencial
+5. Mayor precisión en extracción de campos
 
-🚀 Endpoints
-- POST /ocr         -> Procesa ANVERSO (con timeout + kill REAL del proceso)
-- POST /ocrreverso  -> Procesa REVERSO (MRZ tipo "IDMEX...") (sin timeout por defecto)
-- POST /enhance     -> Mejora imagen para OCR
-
-🧠 Debug:
-- POST /ocr?debug=1 -> incluye "_ocr_texts" (líneas crudas ya normalizadas)
-- POST /ocrreverso?debug=1 -> idem
-
-──────────────────────────────────────────────────────────────────────────────
-🆕 MEJORA CLAVE solicitada ⏱️🪪
-──────────────────────────────────────────────────────────────────────────────
-🎯 Requisito:
-- Si POST /ocr tarda más de X segundos:
-  ✅ devolver {"error":"❌ La imagen es poco clara"} con HTTP 408
-  ✅ y cortar de tajo el OCR (que NO se quede colgado)
-
-✅ Implementación robusta:
-- El OCR corre en un PROCESO separado (multiprocessing)
-- Si se pasa del tiempo:
-  🧨 se termina el proceso (terminate) y se responde 408
-- Esto evita errores tipo:
-  ❌ "cannot schedule new futures after shutdown"
-  ❌ "se quedó colgado y el siguiente request ya no responde"
-
-⚠️ Nota:
-- Matar hilos de Python con ctypes es inseguro.
-- Con procesos sí podemos matar el trabajo pesado de Paddle/OpenCV de forma confiable.
-
-✨ Swagger:
-- http://localhost:5001/apidocs/
-
+🚀 Endpoints:
+- POST /ocr  -> Procesa ANVERSO con todas las mejoras
 """
 
 from __future__ import annotations
@@ -63,7 +34,8 @@ import cv2
 # ============================================================
 import re
 import io
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
+from datetime import datetime
 
 # ============================================================
 # 🧨 Timeout "kill real" con PROCESOS
@@ -81,7 +53,7 @@ CORS(
     app,
     resources={
         r"/*": {
-            "origins": "*",  # ⚠️ en producción limita dominios
+            "origins": "*",
             "methods": ["GET", "POST", "OPTIONS"],
             "allow_headers": ["Content-Type", "Authorization"],
         }
@@ -91,9 +63,9 @@ CORS(
 swagger_template = {
     "swagger": "2.0",
     "info": {
-        "title": "🪪 INE OCR API 🇲🇽",
-        "description": "API para extraer datos del ANVERSO y REVERSO de credenciales INE/IFE usando PaddleOCR.",
-        "version": "1.0.1",
+        "title": "🪪 INE OCR API MEJORADO 🇲🇽",
+        "description": "API mejorada para extraer datos de credenciales INE/IFE con validación desde CURP y Clave de Elector",
+        "version": "2.0.0",
     },
     "basePath": "/",
     "schemes": ["http"],
@@ -122,19 +94,38 @@ swagger = Swagger(app, template=swagger_template, config=swagger_config)
 # ============================================================
 OCR_TIMEOUT_SECONDS: int = 30
 
+# ============================================================
+# 📊 DICCIONARIOS DE REFERENCIA
+# ============================================================
+CODIGOS_ESTADO_CURP = {
+    'AS': 'AGUASCALIENTES', 'BC': 'BAJA CALIFORNIA', 'BS': 'BAJA CALIFORNIA SUR',
+    'CC': 'CAMPECHE', 'CL': 'COAHUILA', 'CM': 'COLIMA', 'CS': 'CHIAPAS',
+    'CH': 'CHIHUAHUA', 'DF': 'CIUDAD DE MÉXICO', 'DG': 'DURANGO',
+    'GT': 'GUANAJUATO', 'GR': 'GUERRERO', 'HG': 'HIDALGO', 'JC': 'JALISCO',
+    'MC': 'MÉXICO', 'MN': 'MICHOACÁN', 'MS': 'MORELOS', 'NT': 'NAYARIT',
+    'NL': 'NUEVO LEÓN', 'OC': 'OAXACA', 'PL': 'PUEBLA', 'QT': 'QUERÉTARO',
+    'QR': 'QUINTANA ROO', 'SP': 'SAN LUIS POTOSÍ', 'SL': 'SINALOA',
+    'SR': 'SONORA', 'TC': 'TABASCO', 'TS': 'TAMAULIPAS', 'TL': 'TLAXCALA',
+    'VZ': 'VERACRUZ', 'YN': 'YUCATÁN', 'ZS': 'ZACATECAS', 'NE': 'EXTRANJERO'
+}
+
+CODIGOS_ESTADO_ELECTOR = {
+    '01': 'AGUASCALIENTES', '02': 'BAJA CALIFORNIA', '03': 'BAJA CALIFORNIA SUR',
+    '04': 'CAMPECHE', '05': 'COAHUILA', '06': 'COLIMA', '07': 'CHIAPAS',
+    '08': 'CHIHUAHUA', '09': 'CIUDAD DE MÉXICO', '10': 'DURANGO',
+    '11': 'GUANAJUATO', '12': 'GUERRERO', '13': 'HIDALGO', '14': 'JALISCO',
+    '15': 'MÉXICO', '16': 'MICHOACÁN', '17': 'MORELOS', '18': 'NAYARIT',
+    '19': 'NUEVO LEÓN', '20': 'OAXACA', '21': 'PUEBLA', '22': 'QUERÉTARO',
+    '23': 'QUINTANA ROO', '24': 'SAN LUIS POTOSÍ', '25': 'SINALOA',
+    '26': 'SONORA', '27': 'TABASCO', '28': 'TAMAULIPAS', '29': 'TLAXCALA',
+    '30': 'VERACRUZ', '31': 'YUCATÁN', '32': 'ZACATECAS'
+}
 
 # ============================================================
-# 🔎 OCR Engine (PaddleOCR)
+# 🔍 OCR Engine (PaddleOCR)
 # ============================================================
-# ✅ Config que ya te funcionaba
-# ⚠️ IMPORTANTE:
-# - PaddleOCR dentro de procesos: se inicializa dentro del proceso worker (más estable)
-# - Así evitamos compartir estado pesado entre requests.
 def _build_ocr_engine() -> PaddleOCR:
-    """
-    🏭 Crea una instancia de PaddleOCR.
-    Se llama dentro del proceso worker para evitar problemas de concurrencia.
-    """
+    """🏭 Crea una instancia de PaddleOCR."""
     return PaddleOCR(
         use_doc_orientation_classify=False,
         use_doc_unwarping=False,
@@ -144,10 +135,240 @@ def _build_ocr_engine() -> PaddleOCR:
 
 
 # ============================================================
-# 🧩 Helpers de extracción (regex + utilidades)
+# 🏷️ CLASIFICACIÓN DE TIPO DE CREDENCIAL
 # ============================================================
+def clasificar_tipo_credencial(texts: List[str]) -> str:
+    """
+    🔍 Clasifica la credencial en tipo C, D o GM basado en patrones.
+    
+    Reglas:
+    - GM: Tiene "INSTITUTO NACIONAL ELECTORAL" y estructura específica
+    - D: Tiene "INSTITUTO NACIONAL ELECTORAL" pero formato diferente
+    - C: Tiene "INSTITUTO FEDERAL ELECTORAL" (más antiguo)
+    """
+    textos_upper = [t.upper() for t in texts]
+    texto_completo = " ".join(textos_upper)
+    
+    # Patrones para identificar tipo
+    tiene_ine = "INSTITUTO NACIONAL ELECTORAL" in texto_completo
+    tiene_ife = "INSTITUTO FEDERAL ELECTORAL" in texto_completo
+    tiene_credencial_para_votar = "CREDENCIAL PARA VOTAR" in texto_completo
+    tiene_mrz_idmex = "IDMEX" in texto_completo
+    
+    # Heurísticas para diferenciar GM vs D
+    if tiene_ine and tiene_credencial_para_votar:
+        # GM suele tener "CLAVE DE ELECTOR" y estructura más organizada
+        if "CLAVE DE ELECTOR" in texto_completo:
+            return "GM"
+        else:
+            return "D"
+    elif tiene_ife:
+        return "C"
+    
+    # Por defecto, si no se identifica claramente
+    return "D"
+
+
+# ============================================================
+# 🧠 VALIDACIÓN Y EXTRACCIÓN DESDE CURP
+# ============================================================
+def extraer_datos_desde_curp(curp: str) -> Dict[str, str]:
+    """
+    📊 Extrae información validada desde la CURP.
+    
+    Estructura CURP: AAAA BB CC DD E F G H I J K L M N Ñ O P
+    """
+    datos = {
+        "sexo": "",
+        "fecha_nacimiento": "",
+        "entidad_nacimiento": "",
+        "estado": ""
+    }
+    
+    if not curp or len(curp) < 16:
+        return datos
+    
+    # 1. Sexo (10º carácter)
+    if len(curp) >= 10:
+        sexo_char = curp[10].upper()
+        if sexo_char == 'H':
+            datos["sexo"] = "H"
+        elif sexo_char == 'M':
+            datos["sexo"] = "M"
+        else:
+            datos["sexo"] = "X"
+    
+    # 2. Fecha de nacimiento (5º al 10º carácter: AAMMDD)
+    if len(curp) >= 10:
+        anio = curp[4:6]  # Últimos 2 dígitos del año
+        mes = curp[6:8]
+        dia = curp[8:10]
+        
+        # Determinar siglo (19xx o 20xx)
+        # Asumimos que si el año es mayor a año actual - 100, es 1900, sino 2000
+        año_actual_2dig = datetime.now().year % 100
+        año_num = int(anio)
+        siglo = "19" if año_num > año_actual_2dig else "20"
+        
+        datos["fecha_nacimiento"] = f"{dia}/{mes}/{siglo}{anio}"
+    
+    # 3. Entidad de nacimiento (12º y 13º carácter)
+    if len(curp) >= 13:
+        codigo_estado = curp[11:13].upper()
+        datos["entidad_nacimiento"] = codigo_estado
+        datos["estado"] = CODIGOS_ESTADO_CURP.get(codigo_estado, "")
+    
+    return datos
+
+
+# ============================================================
+# 🗳️ VALIDACIÓN Y EXTRACCIÓN DESDE CLAVE DE ELECTOR
+# ============================================================
+def extraer_datos_desde_clave_elector(clave: str) -> Dict[str, str]:
+    """
+    📍 Extrae información desde la Clave de Elector.
+    
+    Estructura: AAAA BB CCC DD E F
+    """
+    datos = {
+        "estado_clave": "",
+        "seccion_clave": "",
+        "anio_registro_clave": ""
+    }
+    
+    if not clave or len(clave) < 13:
+        return datos
+    
+    # 1. Estado (primeros 2 dígitos)
+    if len(clave) >= 2:
+        codigo_estado = clave[0:2]
+        datos["estado_clave"] = CODIGOS_ESTADO_ELECTOR.get(codigo_estado, "")
+    
+    # 2. Sección (posiciones 5-6, considerando variaciones)
+    # Buscar 4 dígitos consecutivos que puedan ser sección
+    seccion_match = re.search(r'\b(\d{4})\b', clave)
+    if seccion_match:
+        datos["seccion_clave"] = seccion_match.group(1)
+    
+    # 3. Año de registro (varía según posición)
+    # Buscar patrón de 4 dígitos que sea un año plausible (1900-2025)
+    for match in re.finditer(r'\b(19\d{2}|20[0-2]\d)\b', clave):
+        año = int(match.group())
+        if 1900 <= año <= datetime.now().year + 1:
+            datos["anio_registro_clave"] = str(año)
+            break
+    
+    return datos
+
+
+# ============================================================
+# 👤 MEJORA EN EXTRACCIÓN DE NOMBRE
+# ============================================================
+def limpiar_y_validar_nombre(nombre: str) -> str:
+    """
+    🧹 Limpia y valida el nombre extraído, removiendo palabras erróneas.
+    """
+    if not nombre:
+        return ""
+    
+    # Palabras que NO deberían estar en un nombre
+    palabras_invalidas = [
+        'EDAD', 'AÑOS', 'AÑO', 'EDAD:', 'EDADES', 'FECHA', 'NACIMIENTO',
+        'DOMICILIO', 'CALLE', 'COLONIA', 'ESTADO', 'MUNICIPIO', 'CIUDAD',
+        'CP', 'C.P.', 'CÓDIGO', 'POSTAL', 'SECCIÓN', 'SECCION', 'CLAVE',
+        'ELECTOR', 'CURP', 'VIGENCIA', 'VIGENTE', 'INSTITUTO', 'NACIONAL',
+        'FEDERAL', 'ELECTORAL', 'CREDENCIAL', 'VOTAR', 'PARA', 'MÉXICO'
+    ]
+    
+    # Convertir a mayúsculas para comparación
+    nombre_upper = nombre.upper()
+    
+    # Remover palabras inválidas
+    palabras = nombre_upper.split()
+    palabras_limpias = []
+    
+    for palabra in palabras:
+        palabra_limpia = re.sub(r'[^\wÁÉÍÓÚÜÑ]', '', palabra)
+        if (palabra_limpia and 
+            len(palabra_limpia) > 1 and 
+            palabra_limpia not in palabras_invalidas and
+            not palabra_limpia.isdigit() and
+            not re.match(r'^\d+[A-Z]*$', palabra_limpia)):
+            palabras_limpias.append(palabra)
+    
+    # Reconstruir nombre manteniendo capitalización original
+    nombre_original = nombre.split()
+    nombre_final = []
+    
+    for palabra in nombre_original:
+        if palabra.upper() in [p.upper() for p in palabras_limpias]:
+            nombre_final.append(palabra)
+    
+    return " ".join(nombre_final)
+
+
+def extraer_nombre_mejorado(texts: List[str], tipo_credencial: str) -> str:
+    """
+    👤 Extrae y limpia el nombre según el tipo de credencial.
+    """
+    textos_limpios = normalizar_textos(texts)
+    
+    # Estrategias por tipo de credencial
+    if tipo_credencial == "GM":
+        # GM tiene estructura más clara: "NOMBRE" seguido del nombre
+        for i, line in enumerate(textos_limpios):
+            if "NOMBRE" in line.upper():
+                # Tomar la siguiente línea como nombre
+                if i + 1 < len(textos_limpios):
+                    nombre_crudo = textos_limpios[i + 1]
+                    return limpiar_y_validar_nombre(nombre_crudo)
+    
+    # Para tipos C y D, usar búsqueda más amplia
+    patrones_nombre = [
+        r'NOMBRE[:\s]*([A-ZÁÉÍÓÚÜÑ\s\.]+)',
+        r'([A-ZÁÉÍÓÚÜÑ]{2,}\s+[A-ZÁÉÍÓÚÜÑ]{2,}\s+[A-ZÁÉÍÓÚÜÑ]{2,})',
+        r'([A-ZÁÉÍÓÚÜÑ]{2,}\s+[A-ZÁÉÍÓÚÜÑ]{2,})'
+    ]
+    
+    for patron in patrones_nombre:
+        for line in textos_limpios:
+            match = re.search(patron, line.upper())
+            if match:
+                nombre_crudo = match.group(1) if match.groups() else line
+                nombre_limpio = limpiar_y_validar_nombre(nombre_crudo)
+                if nombre_limpio and len(nombre_limpio.split()) >= 2:
+                    return nombre_limpio
+    
+    # Si no se encuentra con patrones, buscar líneas que parezcan nombre
+    lineas_candidatas = []
+    for line in textos_limpios:
+        palabras = line.upper().split()
+        if (len(palabras) >= 2 and len(palabras) <= 5 and
+            not any(palabra in palabras_invalidas for palabra in palabras) and
+            all(len(p) > 1 for p in palabras)):
+            lineas_candidatas.append(line)
+    
+    if lineas_candidatas:
+        return limpiar_y_validar_nombre(lineas_candidatas[0])
+    
+    return ""
+
+
+# ============================================================
+# 🧩 FUNCIONES AUXILIARES
+# ============================================================
+def normalizar_textos(texts: List[str]) -> List[str]:
+    """🧼 Normaliza líneas OCR."""
+    limpios: List[str] = []
+    for t in texts:
+        t2 = re.sub(r'\s+', ' ', (t or '').strip())
+        if t2:
+            limpios.append(t2)
+    return limpios
+
+
 def buscar_en_lista(pattern: str, lista: List[str]) -> str:
-    """🔍 Busca regex en una lista y regresa el primer group(1) encontrado."""
+    """🔍 Busca regex en lista."""
     for line in lista:
         match = re.search(pattern, line)
         if match:
@@ -156,204 +377,58 @@ def buscar_en_lista(pattern: str, lista: List[str]) -> str:
 
 
 def buscar_seccion(lista: List[str]) -> str:
-    """🧾 Busca sección electoral (número de 4 dígitos)."""
+    """📍 Busca sección electoral."""
     for line in lista:
-        if re.fullmatch(r"\d{4}", line.strip()):
+        if re.fullmatch(r'\d{4}', line.strip()):
             return line.strip()
     return ""
 
 
-def normalizar_textos(texts: List[str]) -> List[str]:
-    """🧼 Normaliza líneas OCR (trim + espacios)."""
-    limpios: List[str] = []
-    for t in texts:
-        t2 = re.sub(r"\s+", " ", (t or "").strip())
-        if t2:
-            limpios.append(t2)
-    return limpios
-
-
 # ============================================================
-# 👤 Extracción robusta de NOMBRE (anverso)
+# 🪪 EXTRACCIÓN PRINCIPAL MEJORADA
 # ============================================================
-def _es_linea_candidata_nombre(line: str) -> bool:
+def extraer_campos_ine_mejorado(texts: List[str]) -> Dict[str, Any]:
     """
-    🧪 Heurística: determina si una línea parece nombre.
+    🪪 Extrae campos del ANVERSO con validación desde CURP y Clave de Elector.
     """
-    s = (line or "").strip()
-    if not s:
-        return False
-
-    up = s.upper()
-
-    if re.search(r"\d", up):
-        return False
-
-    if re.search(
-        r"(INSTITUTO|NACIONAL|ELECTORAL|CREDENCIAL|VOTAR|MÉXICO|MEXICO|DOMICILIO|CLAVE|ELECTOR|CURP|SEXO|FECHA|NACIMIENTO|REGISTRO|SECCI[ÓO]N|VIGENCIA|AÑO)",
-        up
-    ):
-        return False
-
-    if not re.fullmatch(r"[A-ZÁÉÍÓÚÜÑ\s\.\-]+", up):
-        return False
-
-    if len(up) < 3:
-        return False
-
-    return True
-
-
-def _limpiar_nombre_pieza(s: str) -> str:
-    """🧽 Limpia pieza de nombre."""
-    s = (s or "").strip()
-    s = re.sub(r"\s+", " ", s)
-    s = re.sub(r"^[\:\-\.\,]+", "", s).strip()
-    s = re.sub(r"[\:\-\.\,]+$", "", s).strip()
-    return s
-
-
-def extraer_nombre_completo(texts: List[str]) -> str:
-    """
-    👤 Extrae el nombre completo del ANVERSO.
-    """
-    if not texts:
-        return ""
-
-    lines = normalizar_textos(texts)
-    upper = [l.upper() for l in lines]
-
-    patron_nombre_label = r"\bN[O0]M[B8]R[E3](?:\(?S\)?)?\b"
-    patron_domicilio_label = r"\bDOMICILIO\b"
-
-    idx_nombre: Optional[int] = None
-    idx_domicilio: Optional[int] = None
-
-    for i, l in enumerate(upper):
-        if idx_nombre is None and re.search(patron_nombre_label, l):
-            idx_nombre = i
-        if idx_domicilio is None and re.search(patron_domicilio_label, l):
-            idx_domicilio = i
-
-    def juntar(cands: List[str]) -> str:
-        cands = [_limpiar_nombre_pieza(c) for c in cands if _limpiar_nombre_pieza(c)]
-        cands = [c for c in cands if _es_linea_candidata_nombre(c)]
-
-        dedup: List[str] = []
-        for c in cands:
-            if not dedup or dedup[-1].upper() != c.upper():
-                dedup.append(c)
-
-        nombre = re.sub(r"\s+", " ", " ".join(dedup)).strip()
-
-        # 🧼 quitar label NOMBRE si quedó pegado
-        nombre = re.sub(
-            r"^\s*N[O0]M[B8]R[E3](?:\(?S\)?)?\s*[:\-]?\s*",
-            "",
-            nombre,
-            flags=re.IGNORECASE
-        ).strip()
-
-        return nombre
-
-    if idx_nombre is not None:
-        candidatos: List[str] = []
-
-        same_line = lines[idx_nombre]
-        same_up = upper[idx_nombre]
-        m = re.search(patron_nombre_label + r"[:\s\-]*", same_up)
-        if m:
-            resto = _limpiar_nombre_pieza(same_line[m.end():])
-            if resto and _es_linea_candidata_nombre(resto):
-                candidatos.append(resto)
-
-        start = idx_nombre + 1
-        end = idx_domicilio if (idx_domicilio is not None and idx_domicilio > start) else len(lines)
-
-        for j in range(start, min(end, start + 6)):
-            if re.search(r"\b(DOMICILIO|CLAVE|ELECTOR|CURP|SEXO|FECHA|NACIMIENTO|REGISTRO|SECCI[ÓO]N|VIGENCIA|AÑO)\b", upper[j]):
-                break
-
-            pieza = _limpiar_nombre_pieza(lines[j])
-            if pieza and _es_linea_candidata_nombre(pieza):
-                candidatos.append(pieza)
-
-            if len(candidatos) >= 4:
-                break
-
-        nombre = juntar(candidatos)
-
-        if nombre:
-            piezas = nombre.split()
-            if len(candidatos) <= 1 or len(piezas) <= 2:
-                if idx_domicilio is not None:
-                    extra: List[str] = []
-                    for k in range(idx_domicilio - 1, idx_nombre, -1):
-                        pieza2 = _limpiar_nombre_pieza(lines[k])
-                        if pieza2 and _es_linea_candidata_nombre(pieza2):
-                            extra.append(pieza2)
-                        if len(extra) >= 3:
-                            break
-                    extra = list(reversed(extra))
-                    if extra:
-                        nombre2 = juntar(extra + candidatos)
-                        if nombre2:
-                            return nombre2
-
-            return nombre
-
-    if idx_domicilio is not None:
-        candidatos = []
-        for j in range(idx_domicilio - 1, max(idx_domicilio - 7, -1), -1):
-            if j < 0:
-                break
-            pieza = _limpiar_nombre_pieza(lines[j])
-            if pieza and _es_linea_candidata_nombre(pieza):
-                candidatos.append(pieza)
-            if len(candidatos) >= 4:
-                break
-        candidatos = list(reversed(candidatos))
-        return juntar(candidatos)
-
-    candidatos = []
-    for l in lines:
-        pieza = _limpiar_nombre_pieza(l)
-        if pieza and _es_linea_candidata_nombre(pieza):
-            candidatos.append(pieza)
-        if len(candidatos) >= 3:
-            break
-
-    return juntar(candidatos)
-
-
-# ============================================================
-# 🪪 Extracción ANVERSO
-# ============================================================
-def extraer_campos_ine(texts: List[str]) -> Dict[str, Any]:
-    """🪪 Extrae campos típicos del ANVERSO de la credencial INE."""
     texts = normalizar_textos(texts)
-    es_ine = any("INSTITUTO NACIONAL ELECTORAL" in line.upper() for line in texts)
-
-    nombre_completo = extraer_nombre_completo(texts)
-
+    
+    # 1. Clasificar tipo de credencial
+    tipo_credencial = clasificar_tipo_credencial(texts)
+    
+    # 2. Extraer CURP y Clave de Elector
+    curp_crudo = buscar_en_lista(r'([A-Z]{4}[0-9]{6}[HMX][A-Z]{5,6}[0-9A-Z])', texts)
+    clave_elector_crudo = buscar_en_lista(r'\b([A-Z0-9]{18})\b', texts) or buscar_en_lista(r'\b([A-Z]{6}\d{8,10}[A-Z0-9]{2,4})\b', texts)
+    
+    # 3. Extraer datos desde CURP y Clave de Elector
+    datos_curp = extraer_datos_desde_curp(curp_crudo)
+    datos_clave = extraer_datos_desde_clave_elector(clave_elector_crudo)
+    
+    # 4. Extraer nombre mejorado
+    nombre_completo = extraer_nombre_mejorado(texts, tipo_credencial)
+    
+    # 5. Extraer otros campos
     campos: Dict[str, Any] = {
-        "es_ine": es_ine,
+        "tipo_credencial": tipo_credencial,
+        "es_ine": "INSTITUTO NACIONAL ELECTORAL" in " ".join([t.upper() for t in texts]),
         "nombre": nombre_completo,
-        "curp": buscar_en_lista(r"([A-Z]{4}[0-9]{6}[HMX]{1}[A-Z]+[0-9]+)", texts),
-        "clave_elector": buscar_en_lista(r"\b([A-Z]{6}\d{6,8}[A-Z0-9]{2,4})\b", texts),
-        "fecha_nacimiento": buscar_en_lista(r"\b(\d{2}/\d{2}/\d{4})\b", texts),
-        "anio_registro": buscar_en_lista(r"(\d{4}\s\d+)", texts),
+        "curp": curp_crudo,
+        "clave_elector": clave_elector_crudo,
+        "fecha_nacimiento": buscar_en_lista(r'\b(\d{2}/\d{2}/\d{4})\b', texts),
+        "anio_registro": buscar_en_lista(r'(\d{4}\s\d+)', texts),
         "seccion": buscar_seccion(texts),
-        "vigencia": buscar_en_lista(r"(\d{4}\s[-]?\s?\d{4})", texts),
-        "sexo": buscar_en_lista(r"\b(H|M|X)\b", texts),
+        "vigencia": buscar_en_lista(r'(\d{4}\s*[-]?\s*?\d{4})', texts),
+        "sexo": buscar_en_lista(r'\b(H|M|X)\b', texts),
         "pais": "Mex",
     }
-
-    dom_index: Optional[int] = next(
-        (i for i, line in enumerate(texts) if "DOMICILIO" in line.upper()),
-        None,
-    )
-
+    
+    # 6. Extraer domicilio
+    dom_index = None
+    for i, line in enumerate(texts):
+        if "DOMICILIO" in line.upper():
+            dom_index = i
+            break
+    
     if dom_index is not None:
         campos["calle"] = texts[dom_index + 1] if len(texts) > dom_index + 1 else ""
         campos["colonia"] = texts[dom_index + 2] if len(texts) > dom_index + 2 else ""
@@ -362,189 +437,62 @@ def extraer_campos_ine(texts: List[str]) -> Dict[str, Any]:
         campos["calle"] = ""
         campos["colonia"] = ""
         campos["estado"] = ""
-
-    match_num = re.search(r"\b(\d{1,5}[A-Z]?(?:\s*INT\.?\s*\d+)?)\b", campos["calle"])
+    
+    # Extraer número de calle
+    match_num = re.search(r'\b(\d{1,5}[A-Z]?(?:\s*INT\.?\s*\d+)?)\b', campos["calle"])
     campos["numero"] = match_num.group(1) if match_num else ""
-
-    campos["codigo_postal"] = buscar_en_lista(r"\b(\d{5})\b", [campos["colonia"], campos["estado"]])
-
+    
+    # Extraer código postal
+    campos["codigo_postal"] = buscar_en_lista(r'\b(\d{5})\b', [campos["colonia"], campos["estado"]])
+    
+    # 7. VALIDAR Y COMPLETAR DATOS FALTANTES
+    # Si falta sexo, tomarlo de la CURP
+    if not campos["sexo"] and datos_curp["sexo"]:
+        campos["sexo"] = datos_curp["sexo"]
+    
+    # Si falta fecha de nacimiento, tomarlo de la CURP
+    if not campos["fecha_nacimiento"] and datos_curp["fecha_nacimiento"]:
+        campos["fecha_nacimiento"] = datos_curp["fecha_nacimiento"]
+    
+    # Si falta sección, intentar desde clave de elector
+    if not campos["seccion"] and datos_clave["seccion_clave"]:
+        campos["seccion"] = datos_clave["seccion_clave"]
+    
+    # Si falta año de registro, intentar desde clave de elector
+    if not campos["anio_registro"] and datos_clave["anio_registro_clave"]:
+        campos["anio_registro"] = datos_clave["anio_registro_clave"] + " 00"
+    
+    # Si el estado del domicilio es ambiguo pero tenemos info de CURP
+    if campos["estado"] and len(campos["estado"]) < 10:  # Estado muy corto o ambiguo
+        if datos_curp["estado"]:
+            # Verificar si el estado de la CURP es compatible
+            estado_curp = datos_curp["estado"].upper()
+            if any(palabra in estado_curp for palabra in campos["estado"].upper().split()):
+                campos["estado"] = datos_curp["estado"]
+    
+    # Si no hay estado del domicilio, usar el de la CURP
+    if not campos["estado"] or len(campos["estado"].strip()) < 5:
+        if datos_curp["estado"]:
+            campos["estado"] = datos_curp["estado"]
+        elif datos_clave["estado_clave"]:
+            campos["estado"] = datos_clave["estado_clave"]
+    
+    # 8. Formatear año de registro si es necesario
+    if campos["anio_registro"] and " " not in campos["anio_registro"]:
+        campos["anio_registro"] = campos["anio_registro"] + " 00"
+    
+    # 9. Limpiar formato de vigencia
+    if campos["vigencia"]:
+        campos["vigencia"] = re.sub(r'\s+', ' ', campos["vigencia"].replace('-', ' - '))
+    
     return campos
 
 
 # ============================================================
-# 🔙 Extracción REVERSO (MRZ)
-# ============================================================
-def extraer_campos_reverso(texto: List[str]) -> Dict[str, Any]:
-    """🔙 Extrae información del REVERSO mediante MRZ tipo IDMEX..."""
-    texto = normalizar_textos(texto)
-
-    resultado: Dict[str, Any] = {
-        "linea1": "",
-        "linea2": "",
-        "apellido_paterno": "",
-        "apellido_materno": "",
-        "nombre_reverso": "",
-        "es_ine": False,
-    }
-
-    if len(texto) != 3 or not texto[0].startswith("IDMEX"):
-        return resultado
-
-    resultado["es_ine"] = True
-    resultado["linea1"] = texto[0]
-    resultado["linea2"] = texto[1]
-
-    line3 = texto[2]
-    name_parts = [p for p in line3.split("<") if p]
-
-    if len(name_parts) >= 1:
-        resultado["apellido_paterno"] = name_parts[0]
-    if len(name_parts) >= 2:
-        resultado["apellido_materno"] = name_parts[1]
-    if len(name_parts) >= 3:
-        resultado["nombre_reverso"] = "".join(name_parts[2:])
-
-    return resultado
-
-
-# ============================================================
-# 🖼️ Lectura de imagen desde request
-# ============================================================
-def leer_imagen_desde_request(field_name: str = "imagen") -> Optional[np.ndarray]:
-    """🖼️ Lee imagen multipart/form-data y decodifica con OpenCV."""
-    if field_name not in request.files:
-        return None
-
-    file = request.files[field_name]
-    data = file.read()
-    if not data:
-        return None
-
-    npimg = np.frombuffer(data, np.uint8)
-    img = cv2.imdecode(npimg, cv2.IMREAD_COLOR)
-    return img
-
-
-# ============================================================
-# 🖼️ Mejora de imagen (igual que tu pipeline)
-# ============================================================
-def _order_points(pts: np.ndarray) -> np.ndarray:
-    """🧭 Ordena 4 puntos: top-left, top-right, bottom-right, bottom-left."""
-    rect = np.zeros((4, 2), dtype="float32")
-    s = pts.sum(axis=1)
-    diff = np.diff(pts, axis=1)
-    rect[0] = pts[np.argmin(s)]
-    rect[2] = pts[np.argmax(s)]
-    rect[1] = pts[np.argmin(diff)]
-    rect[3] = pts[np.argmax(diff)]
-    return rect
-
-
-def _four_point_transform(image: np.ndarray, pts: np.ndarray) -> np.ndarray:
-    """📐 Warp de perspectiva usando 4 puntos."""
-    rect = _order_points(pts)
-    (tl, tr, br, bl) = rect
-
-    widthA = np.linalg.norm(br - bl)
-    widthB = np.linalg.norm(tr - tl)
-    maxW = int(max(widthA, widthB))
-
-    heightA = np.linalg.norm(tr - br)
-    heightB = np.linalg.norm(tl - bl)
-    maxH = int(max(heightA, heightB))
-
-    dst = np.array([[0, 0], [maxW - 1, 0], [maxW - 1, maxH - 1], [0, maxH - 1]], dtype="float32")
-
-    M = cv2.getPerspectiveTransform(rect, dst)
-    return cv2.warpPerspective(image, M, (maxW, maxH))
-
-
-def auto_recortar_ine(img_bgr: np.ndarray) -> np.ndarray:
-    """✂️ Detecta contorno de credencial y corrige perspectiva; si falla regresa original."""
-    original = img_bgr
-    h, w = original.shape[:2]
-    max_side = max(h, w)
-    scale = 1100 / max_side if max_side > 1100 else 1.0
-    img = cv2.resize(original, (int(w * scale), int(h * scale))) if scale != 1.0 else original.copy()
-
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    gray = cv2.GaussianBlur(gray, (5, 5), 0)
-
-    edges = cv2.Canny(gray, 50, 160)
-    edges = cv2.dilate(edges, None, iterations=2)
-    edges = cv2.erode(edges, None, iterations=1)
-
-    cnts, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not cnts:
-        return original
-
-    cnts = sorted(cnts, key=cv2.contourArea, reverse=True)[:8]
-
-    screen_cnt = None
-    for c in cnts:
-        peri = cv2.arcLength(c, True)
-        approx = cv2.approxPolyDP(c, 0.02 * peri, True)
-        if len(approx) == 4:
-            screen_cnt = approx
-            break
-
-    if screen_cnt is None:
-        return original
-
-    pts = screen_cnt.reshape(4, 2).astype("float32")
-    if scale != 1.0:
-        pts = pts / scale
-
-    warped = _four_point_transform(original, pts)
-
-    wh, ww = warped.shape[:2]
-    pad = int(min(wh, ww) * 0.01)
-    if pad > 0 and wh > 2 * pad and ww > 2 * pad:
-        warped = warped[pad:wh - pad, pad:ww - pad]
-
-    return warped
-
-
-def mejorar_para_ocr(img_bgr: np.ndarray) -> np.ndarray:
-    """🧠 Mejora suave para OCR (denoise + contraste + nitidez)."""
-    img = img_bgr.copy()
-
-    h, w = img.shape[:2]
-    target_w = 1400
-    if w < target_w:
-        scale = target_w / w
-        img = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_CUBIC)
-
-    img = cv2.fastNlMeansDenoisingColored(img, None, 7, 7, 7, 21)
-
-    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    l2 = clahe.apply(l)
-    lab2 = cv2.merge((l2, a, b))
-    img = cv2.cvtColor(lab2, cv2.COLOR_LAB2BGR)
-
-    blur = cv2.GaussianBlur(img, (0, 0), 1.2)
-    img = cv2.addWeighted(img, 1.55, blur, -0.55, 0)
-
-    return img
-
-
-def pipeline_mejora_ine(img_bgr: np.ndarray) -> np.ndarray:
-    """🧪 Pipeline final: recorte + mejora."""
-    return mejorar_para_ocr(auto_recortar_ine(img_bgr))
-
-
-# ============================================================
-# 🧨 Worker OCR en PROCESO (para poder MATARLO)
+# 🧨 WORKER OCR CON TIMEOUT
 # ============================================================
 def _ocr_worker(img_bgr: np.ndarray, out_q: mp.Queue) -> None:
-    """
-    🏗️ Proceso worker:
-    - Inicializa PaddleOCR adentro del proceso
-    - Ejecuta predict
-    - Regresa textos por Queue
-    """
+    """🏗️ Worker para OCR en proceso separado."""
     try:
         engine = _build_ocr_engine()
         result = engine.predict(img_bgr)
@@ -555,87 +503,58 @@ def _ocr_worker(img_bgr: np.ndarray, out_q: mp.Queue) -> None:
 
 
 def predict_ocr_texts_with_timeout_kill(img_bgr: np.ndarray, timeout_seconds: int) -> List[str]:
-    """
-    ⏱️ Ejecuta OCR en proceso y lo MATA si se pasa del tiempo.
-    """
+    """⏱️ OCR con timeout y kill de proceso."""
     out_q: mp.Queue = mp.Queue(maxsize=1)
     p = mp.Process(target=_ocr_worker, args=(img_bgr, out_q), daemon=True)
-
+    
     p.start()
     p.join(timeout_seconds)
-
+    
     if p.is_alive():
-        # 🧨 TIMEOUT: matar proceso
         try:
             p.terminate()
         finally:
             p.join(timeout=2)
         raise TimeoutError("OCR tardó demasiado (proceso terminado)")
-
-    # Proceso terminó: leer resultado
+    
     try:
         payload = out_q.get_nowait()
     except queue.Empty:
         raise RuntimeError("OCR terminó pero no devolvió resultado")
-
+    
     if not payload.get("ok"):
         raise RuntimeError(payload.get("error", "Error desconocido en OCR"))
-
+    
     return payload.get("texts") or []
 
 
 # ============================================================
-# 🖼️ Endpoint: Enhance
+# 🖼️ FUNCIONES DE IMAGEN
 # ============================================================
-@app.route("/enhance", methods=["POST"])
-def enhance_image():
-    """
-    🖼️ Mejora imagen para OCR (INE/IFE)
-    ---
-    tags:
-      - Image Enhance
-    consumes:
-      - multipart/form-data
-    parameters:
-      - name: imagen
-        in: formData
-        type: file
-        required: true
-        description: 📸 Foto original (celular) de la credencial
-    responses:
-      200:
-        description: ✅ Imagen mejorada (PNG) lista para /ocr
-      400:
-        description: ❌ Error de entrada
-    """
-    img = leer_imagen_desde_request("imagen")
-    if img is None:
-        return jsonify({"error": "❌ No se envió la imagen o está vacía"}), 400
-
-    enhanced = pipeline_mejora_ine(img)
-
-    ok, buf = cv2.imencode(".png", enhanced)
-    if not ok:
-        return jsonify({"error": "❌ No se pudo codificar la imagen mejorada"}), 400
-
-    return send_file(
-        io.BytesIO(buf.tobytes()),
-        mimetype="image/png",
-        as_attachment=False,
-        download_name="ine_enhanced.png",
-    )
+def leer_imagen_desde_request(field_name: str = "imagen") -> Optional[np.ndarray]:
+    """🖼️ Lee imagen del request."""
+    if field_name not in request.files:
+        return None
+    
+    file = request.files[field_name]
+    data = file.read()
+    if not data:
+        return None
+    
+    npimg = np.frombuffer(data, np.uint8)
+    return cv2.imdecode(npimg, cv2.IMREAD_COLOR)
 
 
 # ============================================================
-# 🚀 Endpoint: OCR ANVERSO (con timeout + kill)
+# 🚀 ENDPOINT OCR MEJORADO
 # ============================================================
 @app.route("/ocr", methods=["POST"])
-def ocr_anverso():
+def ocr_anverso_mejorado():
     """
-    🪪 OCR ANVERSO (INE) ⏱️🧨
+    🪪 OCR ANVERSO MEJORADO ⭐
     ---
     tags:
-      - INE OCR
+      - INE OCR Mejorado
     consumes:
       - multipart/form-data
     parameters:
@@ -646,98 +565,50 @@ def ocr_anverso():
         description: 📸 Imagen del anverso de la credencial
     responses:
       200:
-        description: ✅ Datos extraídos del anverso
+        description: ✅ Datos extraídos con validación desde CURP/Clave
       400:
         description: ❌ Falta imagen o imagen inválida
       408:
-        description: ⏱️ OCR tardó demasiado -> la imagen es poco clara
+        description: ⏱️ OCR tardó demasiado
     """
     img = leer_imagen_desde_request("imagen")
     if img is None:
         return jsonify({"error": "❌ No se envió la imagen o está vacía"}), 400
-
+    
     try:
         texts = predict_ocr_texts_with_timeout_kill(img, OCR_TIMEOUT_SECONDS)
     except TimeoutError:
         return jsonify({"error": "❌ La imagen es poco clara"}), 408
     except Exception as e:
         return jsonify({"error": f"❌ Error procesando OCR: {str(e)}"}), 400
-
-    datos = extraer_campos_ine(texts)
-
+    
+    # Extraer datos con validación mejorada
+    datos = extraer_campos_ine_mejorado(texts)
+    
+    # Incluir textos OCR en modo debug
     if (request.args.get("debug") or "").strip() in ("1", "true", "True", "yes", "YES"):
         datos["_ocr_texts"] = normalizar_textos(texts)
-
+        datos["_tipo_detectado"] = datos.get("tipo_credencial", "DESCONOCIDO")
+    
     return jsonify(datos)
 
 
 # ============================================================
-# 🚀 Endpoint: OCR REVERSO (sin timeout por defecto)
-# ============================================================
-@app.route("/ocrreverso", methods=["POST"])
-def ocr_reverso():
-    """
-    🔙 OCR REVERSO (INE - MRZ)
-    ---
-    tags:
-      - INE OCR
-    consumes:
-      - multipart/form-data
-    parameters:
-      - name: imagen
-        in: formData
-        type: file
-        required: true
-        description: 📸 Imagen del reverso de la credencial (MRZ "IDMEX...")
-    responses:
-      200:
-        description: ✅ Datos extraídos del reverso (MRZ)
-      400:
-        description: ❌ Falta imagen o imagen inválida
-    """
-    img = leer_imagen_desde_request("imagen")
-    if img is None:
-        return jsonify({"error": "❌ No se envió la imagen o está vacía"}), 400
-
-    try:
-        # Aquí usamos OCR sin timeout (pero en el MISMO proceso).
-        # Si quieres también con kill, te lo adapto igual.
-        engine = _build_ocr_engine()
-        result = engine.predict(img)
-        texts = result[0]["rec_texts"] if result else []
-    except Exception as e:
-        return jsonify({"error": f"❌ Error procesando OCR: {str(e)}"}), 400
-
-    datos = extraer_campos_reverso(texts)
-
-    if (request.args.get("debug") or "").strip() in ("1", "true", "True", "yes", "YES"):
-        datos["_ocr_texts"] = normalizar_textos(texts)
-
-    return jsonify(datos)
-
-
-# ============================================================
-# 🩺 Health
+# 🩺 HEALTH CHECK
 # ============================================================
 @app.route("/health", methods=["GET"])
 def health_check():
-    """
-    🩺 Health Check del API
-    ---
-    tags:
-      - System
-    responses:
-      200:
-        description: ✅ API funcionando correctamente
-    """
-    return jsonify({"status": "✅ OK", "service": "INE OCR API", "version": "1.0.1"})
+    """🩺 Health Check."""
+    return jsonify({
+        "status": "✅ OK", 
+        "service": "INE OCR API MEJORADO", 
+        "version": "2.0.0",
+        "features": ["Clasificación C/D/GM", "Validación CURP/Clave", "Extracción mejorada"]
+    })
 
 
 # ============================================================
-# ▶️ Run
+# ▶️ RUN
 # ============================================================
 if __name__ == "__main__":
-    # 🧠 Recomendación:
-    # - debug=False en producción
-    # - Si usas gunicorn, configura workers apropiados
     app.run(host="0.0.0.0", port=5001, debug=False)
