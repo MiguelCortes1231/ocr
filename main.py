@@ -1082,6 +1082,288 @@ def health_check():
 
 
 # ============================================================
+# 👤🔎 UTILIDADES: SEPARAR NOMBRE CON REGLAS CURP + LIMPIAR COLONIA
+# ============================================================
+
+def _solo_letras(s: str) -> str:
+    """🔤 Deja solo letras (incluye Ñ/acentos) y espacios."""
+    if not s:
+        return ""
+    s = s.upper().strip()
+    s = re.sub(r"[^A-ZÁÉÍÓÚÜÑ\s]", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _quitar_particulas(tokens: List[str]) -> List[str]:
+    """
+    🧩 Quita partículas comunes al calcular iniciales CURP (NO para armar el apellido final).
+    Ej: DE, DEL, LA, LAS, LOS, Y, MC, MAC, VAN, VON, etc.
+    """
+    particulas = {
+        "DE", "DEL", "LA", "LAS", "LOS", "Y", "MC", "MAC", "VAN", "VON",
+        "DA", "DAS", "DO", "DOS", "DI", "DU"
+    }
+    return [t for t in tokens if t and t not in particulas]
+
+
+def _primera_vocal_interna(palabra: str) -> str:
+    """🔎 Devuelve la primera vocal interna del apellido paterno (para CURP)."""
+    if not palabra:
+        return ""
+    palabra = _solo_letras(palabra).replace(" ", "")
+    if len(palabra) < 2:
+        return ""
+    # vocal interna = desde el 2do char
+    m = re.search(r"[AEIOUÁÉÍÓÚÜ]", palabra[1:])
+    return m.group(0) if m else ""
+
+
+def _primer_nombre_para_curp(nombres_tokens: List[str]) -> str:
+    """
+    👶 Regla común CURP:
+    Si el primer nombre es JOSE o MARIA y hay segundo nombre, se usa el segundo.
+    """
+    if not nombres_tokens:
+        return ""
+    nt = _quitar_particulas([t.upper() for t in nombres_tokens])
+    if not nt:
+        return ""
+    if nt[0] in {"JOSE", "JOSÉ", "MARIA", "MARÍA"} and len(nt) >= 2:
+        return nt[1]
+    return nt[0]
+
+
+def _curp_prefijo_4(ap_pat: str, ap_mat: str, nombres: str) -> str:
+    """
+    🧬 Construye el prefijo CURP (4) desde partes:
+    1) 1ra letra ap_pat
+    2) 1ra vocal interna ap_pat
+    3) 1ra letra ap_mat
+    4) 1ra letra del primer nombre (regla Jose/Maria)
+    """
+    ap_pat_tokens = _quitar_particulas(_solo_letras(ap_pat).split())
+    ap_mat_tokens = _quitar_particulas(_solo_letras(ap_mat).split())
+    nom_tokens = _solo_letras(nombres).split()
+
+    ap_pat_base = ap_pat_tokens[0] if ap_pat_tokens else ""
+    ap_mat_base = ap_mat_tokens[0] if ap_mat_tokens else ""
+    primer_nom = _primer_nombre_para_curp(nom_tokens)
+
+    c1 = ap_pat_base[:1]
+    c2 = _primera_vocal_interna(ap_pat_base)
+    c3 = ap_mat_base[:1]
+    c4 = primer_nom[:1]
+
+    return f"{c1}{c2}{c3}{c4}".upper()
+
+
+def separar_nombre_por_curp_y_tokens(nombre: str, curp: str) -> Dict[str, str]:
+    """
+    🧠 Separa 'nombre completo' en:
+    - apellido_paterno
+    - apellido_materno
+    - nombres
+
+    ✅ Estrategia:
+    - Tokeniza el nombre
+    - Prueba combinaciones (1..3 tokens para ap_pat) + (1..3 tokens para ap_mat)
+    - Calcula prefijo CURP(4) y elige la mejor coincidencia vs curp[:4]
+    """
+    nombre = _solo_letras(nombre)
+    curp = (curp or "").upper().strip()
+
+    out = {"apellido_paterno": "", "apellido_materno": "", "nombres": ""}
+
+    tokens = [t for t in nombre.split() if t]
+    if len(tokens) < 3:
+        # fallback simple
+        if len(tokens) == 2:
+            out["apellido_paterno"] = tokens[0]
+            out["apellido_materno"] = ""
+            out["nombres"] = tokens[1]
+        elif len(tokens) == 1:
+            out["apellido_paterno"] = ""
+            out["apellido_materno"] = ""
+            out["nombres"] = tokens[0]
+        return out
+
+    # Si CURP no viene o está rara, fallback 2 apellidos + resto nombres
+    if len(curp) < 4:
+        out["apellido_paterno"] = tokens[0]
+        out["apellido_materno"] = tokens[1]
+        out["nombres"] = " ".join(tokens[2:])
+        return out
+
+    objetivo = curp[:4]
+
+    best = None  # (score, ap_pat, ap_mat, nombres)
+    # límites razonables para apellidos compuestos
+    for i in range(1, min(3, len(tokens) - 1) + 1):        # ap_pat tokens
+        for j in range(1, min(3, len(tokens) - i) + 1):    # ap_mat tokens
+            if i + j >= len(tokens):
+                continue
+
+            ap_pat = " ".join(tokens[:i])
+            ap_mat = " ".join(tokens[i:i + j])
+            noms = " ".join(tokens[i + j:])
+
+            pref = _curp_prefijo_4(ap_pat, ap_mat, noms)
+
+            # score por coincidencia char a char
+            score = sum(1 for a, b in zip(pref, objetivo) if a == b)
+
+            # bonus si coincide todo
+            if pref == objetivo:
+                score += 10
+
+            # penaliza nombres demasiado cortos
+            if len(noms.split()) == 0:
+                score -= 5
+
+            cand = (score, ap_pat, ap_mat, noms, pref)
+            if best is None or cand[0] > best[0]:
+                best = cand
+
+    if best:
+        _, ap_pat, ap_mat, noms, _pref = best
+        out["apellido_paterno"] = ap_pat
+        out["apellido_materno"] = ap_mat
+        out["nombres"] = noms
+        return out
+
+    # fallback final
+    out["apellido_paterno"] = tokens[0]
+    out["apellido_materno"] = tokens[1]
+    out["nombres"] = " ".join(tokens[2:])
+    return out
+
+
+def limpiar_colonia_con_cp(colonia: str, codigo_postal: str) -> str:
+    """
+    📮🧹 Si el CP aparece dentro de colonia, lo quita.
+    Ej: 'FRACC LA HERRADURA III 77050' + '77050' => 'FRACC LA HERRADURA III'
+    """
+    colonia = (colonia or "").strip()
+    cp = (codigo_postal or "").strip()
+
+    if not colonia or not cp:
+        return colonia
+
+    # quita ocurrencias exactas de CP como token (evita romper otros números)
+    colonia2 = re.sub(rf"(\b{re.escape(cp)}\b)", "", colonia)
+    colonia2 = re.sub(r"\s+", " ", colonia2).strip()
+
+    return colonia2
+# ============================================================
+# 🧩 ENDPOINT: SEPARAR NOMBRE (CURP + CLAVE ELECTOR) + LIMPIAR COLONIA
+# ============================================================
+@app.route("/separar-nombre", methods=["POST"])
+def api_separar_nombre():
+    """
+    👤🧬 Separar nombre completo en apellidos y nombres (valida con CURP)
+    ---
+    tags:
+      - Utilidades
+    consumes:
+      - application/json
+    parameters:
+      - in: body
+        name: payload
+        required: true
+        schema:
+          type: object
+          required:
+            - nombre
+            - curp
+            - clave_elector
+          properties:
+            anio_registro:
+              type: string
+              example: "2011 02"
+            calle:
+              type: string
+              example: "C LOS MOLINOS 174"
+            clave_elector:
+              type: string
+              example: "CSOLRC93053123H800"
+            codigo_postal:
+              type: string
+              example: "77050"
+            colonia:
+              type: string
+              example: "FRACC LA HERRADURA III 77050"
+            curp:
+              type: string
+              example: "CAOR930531HQRSLC0"
+            es_ine:
+              type: boolean
+              example: true
+            estado:
+              type: string
+              example: "OTHON P. BLANCO, Q. ROO."
+            fecha_nacimiento:
+              type: string
+              example: "31/05/1993"
+            nombre:
+              type: string
+              example: "CASTILLO OLIVERA RICARDO ORLANDO"
+            numero:
+              type: string
+              example: "174"
+            pais:
+              type: string
+              example: "Mex"
+            seccion:
+              type: string
+              example: "0378"
+            sexo:
+              type: string
+              example: "H"
+            tipo_credencial:
+              type: string
+              example: "GH"
+            vigencia:
+              type: string
+              example: "2021 - 2031"
+    responses:
+      200:
+        description: ✅ Objeto original + apellido_paterno, apellido_materno, nombres (y colonia limpia si aplica)
+      400:
+        description: ❌ Payload inválido o faltan campos requeridos
+    """
+    data = request.get_json(silent=True) or {}
+    nombre = (data.get("nombre") or "").strip()
+    curp = (data.get("curp") or "").strip()
+    clave_elector = (data.get("clave_elector") or "").strip()
+
+    if not nombre or not curp or not clave_elector:
+        return jsonify({
+            "error": "❌ Debes enviar al menos: nombre, curp y clave_elector"
+        }), 400
+
+    # 🧬 Separación guiada por CURP (y tokens)
+    partes = separar_nombre_por_curp_y_tokens(nombre, curp)
+
+    # 📮 Limpieza de colonia quitando CP si viene incrustado
+    codigo_postal = (data.get("codigo_postal") or "").strip()
+    colonia = (data.get("colonia") or "").strip()
+    colonia_limpia = limpiar_colonia_con_cp(colonia, codigo_postal)
+
+    # ✅ Respuesta: mismo objeto + 3 atributos + colonia limpia
+    resp = dict(data)
+    resp["apellido_paterno"] = partes["apellido_paterno"]
+    resp["apellido_materno"] = partes["apellido_materno"]
+    resp["nombres"] = partes["nombres"]
+
+    # solo modifica colonia si realmente cambió
+    if colonia_limpia and colonia_limpia != colonia:
+        resp["colonia"] = colonia_limpia
+
+    return jsonify(resp), 200
+
+
+# ============================================================
 # ▶️ PUNTO DE INICIO DE LA APLICACIÓN
 # ============================================================
 if __name__ == "__main__":
