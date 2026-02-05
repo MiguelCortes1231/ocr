@@ -307,27 +307,60 @@ def limpiar_y_validar_nombre(nombre: str) -> str:
     return " ".join(nombre_final)
 
 
+# ============================================================
+# 👤 CORRECCIÓN: EXTRACCIÓN DE NOMBRE PARA TIPO GM
+# ============================================================
 def extraer_nombre_mejorado(texts: List[str], tipo_credencial: str) -> str:
     """
     👤 Extrae y limpia el nombre según el tipo de credencial.
+    CORREGIDO: Manejo específico para tipo GM.
     """
     textos_limpios = normalizar_textos(texts)
     
-    # Estrategias por tipo de credencial
+    # Estrategias específicas por tipo de credencial
     if tipo_credencial == "GM":
-        # GM tiene estructura más clara: "NOMBRE" seguido del nombre
+        # GM tiene estructura muy clara: "NOMBRE" en una línea, nombre en la siguiente
         for i, line in enumerate(textos_limpios):
-            if "NOMBRE" in line.upper():
+            line_upper = line.upper()
+            
+            # Buscar línea que contenga exactamente "NOMBRE" (sin otras palabras)
+            if re.fullmatch(r'^NOMBRE\s*$', line_upper.strip()):
                 # Tomar la siguiente línea como nombre
                 if i + 1 < len(textos_limpios):
-                    nombre_crudo = textos_limpios[i + 1]
-                    return limpiar_y_validar_nombre(nombre_crudo)
+                    nombre_candidato = textos_limpios[i + 1].strip()
+                    # Verificar que no sea otra etiqueta
+                    if (nombre_candidato and 
+                        not re.search(r'(DOMICILIO|CLAVE|CURP|FECHA|SECCI[ÓO]N|AÑO|VIGENCIA|SEXO)', nombre_candidato.upper()) and
+                        len(nombre_candidato.split()) >= 2):
+                        return nombre_candidato
+            
+            # También buscar patrón "NOMBRE" seguido del nombre en misma línea
+            match = re.search(r'NOMBRE\s*[:\-]?\s*([A-ZÁÉÍÓÚÜÑ\s\.]{5,})', line_upper)
+            if match:
+                nombre_candidato = match.group(1).strip()
+                if len(nombre_candidato.split()) >= 2:
+                    return nombre_candidato
+        
+        # Si no se encontró con patrones anteriores, buscar después de "NOMBRE"
+        for i, line in enumerate(textos_limpios):
+            if "NOMBRE" in line.upper():
+                # Buscar en líneas siguientes hasta encontrar otra etiqueta
+                for j in range(i + 1, min(i + 4, len(textos_limpios))):
+                    siguiente_linea = textos_limpios[j].strip()
+                    # Si encontramos otra etiqueta, paramos
+                    if re.search(r'(DOMICILIO|CLAVE|CURP|FECHA|SECCI[ÓO]N|AÑO|VIGENCIA)', siguiente_linea.upper()):
+                        break
+                    # Si es un nombre válido
+                    if (siguiente_linea and 
+                        len(siguiente_linea.split()) >= 2 and
+                        not re.search(r'\b(SEXO|H|M|X)\b', siguiente_linea.upper())):
+                        return siguiente_linea
     
     # Para tipos C y D, usar búsqueda más amplia
     patrones_nombre = [
-        r'NOMBRE[:\s]*([A-ZÁÉÍÓÚÜÑ\s\.]+)',
-        r'([A-ZÁÉÍÓÚÜÑ]{2,}\s+[A-ZÁÉÍÓÚÜÑ]{2,}\s+[A-ZÁÉÍÓÚÜÑ]{2,})',
-        r'([A-ZÁÉÍÓÚÜÑ]{2,}\s+[A-ZÁÉÍÓÚÜÑ]{2,})'
+        r'NOMBRE[:\s\-]*([A-ZÁÉÍÓÚÜÑ\s\.]{5,})',
+        r'^([A-ZÁÉÍÓÚÜÑ]{2,}\s+[A-ZÁÉÍÓÚÜÑ]{2,}\s+[A-ZÁÉÍÓÚÜÑ]{2,})$',
+        r'^([A-ZÁÉÍÓÚÜÑ]{2,}\s+[A-ZÁÉÍÓÚÜÑ]{2,})$'
     ]
     
     for patron in patrones_nombre:
@@ -339,21 +372,235 @@ def extraer_nombre_mejorado(texts: List[str], tipo_credencial: str) -> str:
                 if nombre_limpio and len(nombre_limpio.split()) >= 2:
                     return nombre_limpio
     
-    # Si no se encuentra con patrones, buscar líneas que parezcan nombre
-    lineas_candidatas = []
+    # Buscar líneas que parezcan nombre (2-5 palabras, todas mayúsculas, sin números)
+    palabras_invalidas = ['EDAD', 'SEXO', 'DOMICILIO', 'CLAVE', 'CURP', 'FECHA', 'SECCIÓN', 'VIGENCIA']
     for line in textos_limpios:
-        palabras = line.upper().split()
-        if (len(palabras) >= 2 and len(palabras) <= 5 and
-            not any(palabra in palabras_invalidas for palabra in palabras) and
-            all(len(p) > 1 for p in palabras)):
-            lineas_candidatas.append(line)
-    
-    if lineas_candidatas:
-        return limpiar_y_validar_nombre(lineas_candidatas[0])
+        line_upper = line.upper()
+        palabras = line_upper.split()
+        
+        # Verificar si parece un nombre
+        if (2 <= len(palabras) <= 5 and
+            all(len(p) > 1 for p in palabras) and
+            not any(p in palabras_invalidas for p in palabras) and
+            not any(char.isdigit() for char in line_upper) and
+            all(p.isalpha() or any(c in 'ÁÉÍÓÚÜÑ' for c in p) for p in palabras)):
+            
+            nombre_limpio = limpiar_y_validar_nombre(line)
+            if nombre_limpio:
+                return nombre_limpio
     
     return ""
 
 
+# ============================================================
+# 📅 CORRECCIÓN: EXTRACCIÓN DE VIGENCIA
+# ============================================================
+def extraer_vigencia_correcta(texts: List[str], tipo_credencial: str) -> str:
+    """
+    📅 Extrae correctamente la vigencia de la credencial.
+    CORREGIDO: Maneja específicamente formato "2021 - 2031"
+    """
+    textos_limpios = normalizar_textos(texts)
+    
+    # Buscar patrón específico de vigencia
+    for line in textos_limpios:
+        line_upper = line.upper()
+        
+        # Buscar línea que contenga "VIGENCIA"
+        if "VIGENCIA" in line_upper:
+            # Intentar extraer de la misma línea
+            match = re.search(r'VIGENCIA\s*[:\-]?\s*(\d{4}\s*[-\s]+\s*\d{4})', line_upper)
+            if match:
+                vigencia = match.group(1)
+                # Limpiar formato
+                vigencia = re.sub(r'\s+', ' ', vigencia.replace('-', ' - ').strip())
+                return vigencia
+            
+            # Si no está en la misma línea, buscar en siguientes líneas
+            idx = textos_limpios.index(line)
+            for j in range(idx + 1, min(idx + 3, len(textos_limpios))):
+                siguiente = textos_limpios[j]
+                # Buscar patrón de dos años separados por guión
+                match = re.search(r'(\d{4}\s*[-\s]+\s*\d{4})', siguiente)
+                if match:
+                    vigencia = match.group(1)
+                    vigencia = re.sub(r'\s+', ' ', vigencia.replace('-', ' - ').strip())
+                    return vigencia
+        
+        # Buscar directamente patrón de años con guión
+        match = re.search(r'\b(\d{4}\s*[-]\s*\d{4})\b', line)
+        if match:
+            # Verificar que sean años plausibles (1900-2099)
+            años = re.findall(r'\d{4}', match.group(1))
+            if len(años) == 2:
+                año1, año2 = int(años[0]), int(años[1])
+                if 1900 <= año1 <= 2099 and 1900 <= año2 <= 2099 and año2 > año1:
+                    vigencia = match.group(1)
+                    vigencia = re.sub(r'\s+', ' ', vigencia.replace('-', ' - ').strip())
+                    return vigencia
+    
+    # Buscar patrón "VIGENCIA" seguido de años
+    for i, line in enumerate(textos_limpios):
+        if "VIGENCIA" in line.upper():
+            # Revisar próximas 3 líneas
+            for j in range(i, min(i + 3, len(textos_limpios))):
+                siguiente = textos_limpios[j]
+                # Buscar cualquier patrón de año
+                años = re.findall(r'\b(19\d{2}|20\d{2})\b', siguiente)
+                if len(años) >= 2:
+                    return f"{años[0]} - {años[1]}"
+                elif len(años) == 1 and j > i:
+                    # Si solo hay un año en línea siguiente, podría ser inicio de vigencia
+                    siguiente2 = textos_limpios[j + 1] if j + 1 < len(textos_limpios) else ""
+                    año2_match = re.search(r'\b(19\d{2}|20\d{2})\b', siguiente2)
+                    if año2_match:
+                        return f"{años[0]} - {año2_match.group(1)}"
+    
+    return ""
+
+
+# ============================================================
+# 🪪 FUNCIÓN PRINCIPAL CORREGIDA
+# ============================================================
+def extraer_campos_ine_mejorado(texts: List[str]) -> Dict[str, Any]:
+    """
+    🪪 Extrae campos del ANVERSO con validación desde CURP y Clave de Elector.
+    CORREGIDO: Nombre y vigencia.
+    """
+    # Normalizar textos una sola vez
+    textos_limpios = normalizar_textos(texts)
+    
+    # 1. Clasificar tipo de credencial
+    tipo_credencial = clasificar_tipo_credencial(textos_limpios)
+    
+    # 2. Extraer CURP y Clave de Elector (usar textos_limpios)
+    curp_crudo = buscar_en_lista(r'([A-Z]{4}[0-9]{6}[HMX][A-Z]{5,6}[0-9A-Z])', textos_limpios)
+    clave_elector_crudo = buscar_en_lista(r'\b([A-Z0-9]{18})\b', textos_limpios) or buscar_en_lista(r'\b([A-Z]{6}\d{8,10}[A-Z0-9]{2,4})\b', textos_limpios)
+    
+    # 3. Extraer datos desde CURP y Clave de Elector
+    datos_curp = extraer_datos_desde_curp(curp_crudo)
+    datos_clave = extraer_datos_desde_clave_elector(clave_elector_crudo)
+    
+    # 4. Extraer nombre mejorado (CORREGIDO)
+    nombre_completo = extraer_nombre_mejorado(textos_limpios, tipo_credencial)
+    
+    # 5. Extraer vigencia corregida (CORREGIDO)
+    vigencia_correcta = extraer_vigencia_correcta(textos_limpios, tipo_credencial)
+    
+    # 6. Extraer otros campos (usar textos_limpios)
+    campos: Dict[str, Any] = {
+        "tipo_credencial": tipo_credencial,
+        "es_ine": "INSTITUTO NACIONAL ELECTORAL" in " ".join([t.upper() for t in textos_limpios]),
+        "nombre": nombre_completo,
+        "curp": curp_crudo,
+        "clave_elector": clave_elector_crudo,
+        "fecha_nacimiento": buscar_en_lista(r'\b(\d{2}/\d{2}/\d{4})\b', textos_limpios),
+        "anio_registro": buscar_en_lista(r'(\d{4}\s\d+)', textos_limpios),
+        "seccion": buscar_seccion(textos_limpios),
+        "vigencia": vigencia_correcta,  # Usar función corregida
+        "sexo": buscar_en_lista(r'\b(H|M|X)\b', textos_limpios),
+        "pais": "Mex",
+    }
+    
+    # 7. Extraer domicilio (usar textos_limpios)
+    dom_index = None
+    for i, line in enumerate(textos_limpios):
+        if "DOMICILIO" in line.upper():
+            dom_index = i
+            break
+    
+    if dom_index is not None:
+        campos["calle"] = textos_limpios[dom_index + 1] if len(textos_limpios) > dom_index + 1 else ""
+        campos["colonia"] = textos_limpios[dom_index + 2] if len(textos_limpios) > dom_index + 2 else ""
+        campos["estado"] = textos_limpios[dom_index + 3] if len(textos_limpios) > dom_index + 3 else ""
+    else:
+        campos["calle"] = ""
+        campos["colonia"] = ""
+        campos["estado"] = ""
+    
+    # Extraer número de calle
+    match_num = re.search(r'\b(\d{1,5}[A-Z]?(?:\s*INT\.?\s*\d+)?)\b', campos["calle"])
+    campos["numero"] = match_num.group(1) if match_num else ""
+    
+    # Extraer código postal
+    campos["codigo_postal"] = buscar_en_lista(r'\b(\d{5})\b', [campos["colonia"], campos["estado"]])
+    
+    # 8. VALIDAR Y COMPLETAR DATOS FALTANTES
+    # Si falta sexo, tomarlo de la CURP
+    if not campos["sexo"] and datos_curp["sexo"]:
+        campos["sexo"] = datos_curp["sexo"]
+    
+    # Si falta fecha de nacimiento, tomarlo de la CURP
+    if not campos["fecha_nacimiento"] and datos_curp["fecha_nacimiento"]:
+        campos["fecha_nacimiento"] = datos_curp["fecha_nacimiento"]
+    
+    # Si falta sección, intentar desde clave de elector
+    if not campos["seccion"] and datos_clave["seccion_clave"]:
+        campos["seccion"] = datos_clave["seccion_clave"]
+    
+    # Si falta año de registro, intentar desde clave de elector
+    if not campos["anio_registro"] and datos_clave["anio_registro_clave"]:
+        campos["anio_registro"] = datos_clave["anio_registro_clave"] + " 00"
+    
+    # Si no hay estado del domicilio, usar el de la CURP
+    if not campos["estado"] or len(campos["estado"].strip()) < 5:
+        if datos_curp["estado"]:
+            campos["estado"] = datos_curp["estado"]
+        elif datos_clave["estado_clave"]:
+            campos["estado"] = datos_clave["estado_clave"]
+    
+    # 9. Formatear año de registro si es necesario
+    if campos["anio_registro"] and " " not in campos["anio_registro"]:
+        campos["anio_registro"] = campos["anio_registro"] + " 00"
+    
+    # 10. Si no se encontró vigencia con la función específica, usar la búsqueda original
+    if not campos["vigencia"]:
+        vigencia_original = buscar_en_lista(r'(\d{4}\s*[-]?\s*?\d{4})', textos_limpios)
+        if vigencia_original:
+            campos["vigencia"] = vigencia_original
+    
+    # 11. Limpiar formato de vigencia
+    if campos["vigencia"]:
+        campos["vigencia"] = re.sub(r'\s+', ' ', campos["vigencia"].replace('-', ' - ').strip())
+    
+    return campos
+
+# ============================================================
+# 🧩 FUNCIÓN AUXILIAR: BUSCAR EN LISTA MEJORADA
+# ============================================================
+def buscar_en_lista(pattern: str, lista: List[str]) -> str:
+    """🔍 Busca regex en lista - MEJORADA para evitar falsos positivos."""
+    for line in lista:
+        # Para patrones de fecha (dd/mm/yyyy), verificar que sea fecha válida
+        if '\\d{2}/\\d{2}/\\d{4}' in pattern:
+            match = re.search(pattern, line)
+            if match:
+                fecha = match.group(1)
+                # Validar que sea fecha plausible
+                try:
+                    dia, mes, anio = map(int, fecha.split('/'))
+                    if 1 <= dia <= 31 and 1 <= mes <= 12 and 1900 <= anio <= datetime.now().year:
+                        return fecha
+                except:
+                    continue
+        # Para patrones de vigencia (año - año)
+        elif '\\d{4}\\s*[-]' in pattern:
+            match = re.search(pattern, line)
+            if match:
+                vigencia = match.group(1)
+                # Validar que sean años plausibles
+                años = re.findall(r'\d{4}', vigencia)
+                if len(años) == 2:
+                    año1, año2 = int(años[0]), int(años[1])
+                    if 1900 <= año1 <= 2099 and 1900 <= año2 <= 2099 and año2 > año1:
+                        return vigencia
+        else:
+            # Para otros patrones
+            match = re.search(pattern, line)
+            if match:
+                return match.group(1)
+    
+    return ""
 # ============================================================
 # 🧩 FUNCIONES AUXILIARES
 # ============================================================
@@ -367,13 +614,7 @@ def normalizar_textos(texts: List[str]) -> List[str]:
     return limpios
 
 
-def buscar_en_lista(pattern: str, lista: List[str]) -> str:
-    """🔍 Busca regex en lista."""
-    for line in lista:
-        match = re.search(pattern, line)
-        if match:
-            return match.group(1)
-    return ""
+
 
 
 def buscar_seccion(lista: List[str]) -> str:
