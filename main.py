@@ -16,87 +16,111 @@
 from __future__ import annotations
 
 # ============================================================
-# 🌐 Flask + Swagger + CORS
+# 🌐 MÓDULOS PRINCIPALES - FLASK + SWAGGER + CORS
 # ============================================================
+# 🏗️ Flask: Framework web para crear la API REST
+# 📚 Flasgger: Genera documentación Swagger/OpenAPI automática
+# 🔄 CORS: Permite peticiones desde otros dominios (cross-origin)
 from flask import Flask, request, jsonify, send_file
 from flasgger import Swagger
 from flask_cors import CORS
 
 # ============================================================
-# 🧠 OCR / Imagen
+# 🧠 MÓDULOS DE VISIÓN POR COMPUTADORA
 # ============================================================
+# 🚤 PaddleOCR: Motor de OCR principal (reconocimiento de texto en imágenes)
+# 🔢 NumPy: Manipulación de arrays numéricos
+# 🖼️ OpenCV: Procesamiento de imágenes
 from paddleocr import PaddleOCR
 import numpy as np
 import cv2
 
 # ============================================================
-# 🧩 Utils
+# 🧩 MÓDULOS UTILITARIOS
 # ============================================================
+# 🔍 re: Expresiones regulares para búsqueda de patrones
+# 📦 io: Manejo de streams de entrada/salida
+# 📝 typing: Tipado estático para mejor documentación
+# 📅 datetime: Manejo de fechas y tiempos
 import re
 import io
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
 
 # ============================================================
-# 🧨 Timeout "kill real" con PROCESOS
+# 🧨 MÓDULOS PARA MANEJO DE CONCURRENCIA
 # ============================================================
+# 🔄 multiprocessing: Ejecución en procesos separados (para timeout)
+# 🚦 queue: Comunicación entre procesos
 import multiprocessing as mp
 import queue
 
 
 # ============================================================
-# ⚙️ Configuración Flask
+# ⚙️ CONFIGURACIÓN PRINCIPAL DE FLASK
 # ============================================================
+# 🚀 Crea la aplicación Flask principal
 app = Flask(__name__)
 
+# 🔄 Configuración CORS (Cross-Origin Resource Sharing)
+# Permite que cualquier dominio (*) acceda a la API
 CORS(
     app,
     resources={
         r"/*": {
-            "origins": "*",
-            "methods": ["GET", "POST", "OPTIONS"],
-            "allow_headers": ["Content-Type", "Authorization"],
+            "origins": "*",  # 🌍 Permite todos los orígenes
+            "methods": ["GET", "POST", "OPTIONS"],  # 📨 Métodos HTTP permitidos
+            "allow_headers": ["Content-Type", "Authorization"],  # 📋 Headers permitidos
         }
     },
 )
 
+# ============================================================
+# 📚 CONFIGURACIÓN DE SWAGGER (DOCUMENTACIÓN AUTOMÁTICA)
+# ============================================================
+# 🎨 Plantilla de configuración para la interfaz Swagger UI
 swagger_template = {
-    "swagger": "2.0",
+    "swagger": "2.0",  # 📖 Versión de especificación Swagger
     "info": {
-        "title": "🪪 INE OCR API MEJORADO 🇲🇽",
-        "description": "API mejorada para extraer datos de credenciales INE/IFE con validación desde CURP y Clave de Elector",
-        "version": "2.0.0",
+        "title": "🪪 INE OCR API MEJORADO 🇲🇽",  # 🏷️ Título de la API
+        "description": "API mejorada para extraer datos de credenciales INE/IFE con validación desde CURP y Clave de Elector",  # 📝 Descripción
+        "version": "2.0.0",  # 🔢 Versión de la API
     },
-    "basePath": "/",
-    "schemes": ["http"],
+    "basePath": "/",  # 🗺️ Ruta base de los endpoints
+    "schemes": ["http"],  # 🔌 Protocolos soportados
 }
 
+# ⚙️ Configuración técnica de Swagger
 swagger_config = {
-    "headers": [],
+    "headers": [],  # 📋 Headers adicionales
     "specs": [
         {
-            "endpoint": "apispec_1",
-            "route": "/apispec_1.json",
-            "rule_filter": lambda rule: True,
-            "model_filter": lambda tag: True,
+            "endpoint": "apispec_1",  # 🎯 Endpoint para la especificación
+            "route": "/apispec_1.json",  # 🛣️ Ruta del archivo JSON
+            "rule_filter": lambda rule: True,  # 🔍 Filtro de reglas (todas)
+            "model_filter": lambda tag: True,  # 🏷️ Filtro de modelos (todos)
         }
     ],
-    "static_url_path": "/flasgger_static",
-    "swagger_ui": True,
-    "specs_route": "/apidocs/",
+    "static_url_path": "/flasgger_static",  # 📁 Ruta para archivos estáticos
+    "swagger_ui": True,  # 🌐 Habilita la interfaz web de Swagger
+    "specs_route": "/apidocs/",  # 🚪 Ruta de acceso a la documentación
 }
 
+# 🔧 Inicializa Swagger con la aplicación Flask
 swagger = Swagger(app, template=swagger_template, config=swagger_config)
 
 
 # ============================================================
-# ⏱️ Timeout config
+# ⏱️ CONFIGURACIÓN DE TIMEOUT
 # ============================================================
+# ⏰ Tiempo máximo de espera para el proceso OCR (30 segundos)
 OCR_TIMEOUT_SECONDS: int = 30
 
 # ============================================================
-# 📊 DICCIONARIOS DE REFERENCIA
+# 📊 DICCIONARIOS DE REFERENCIA - CÓDIGOS DE ESTADO
 # ============================================================
+# 🗺️ Diccionario que mapea códigos de estado de 2 letras a nombres completos
+# 📍 Usado para decodificar el estado de nacimiento desde la CURP
 CODIGOS_ESTADO_CURP = {
     'AS': 'AGUASCALIENTES', 'BC': 'BAJA CALIFORNIA', 'BS': 'BAJA CALIFORNIA SUR',
     'CC': 'CAMPECHE', 'CL': 'COAHUILA', 'CM': 'COLIMA', 'CS': 'CHIAPAS',
@@ -109,6 +133,8 @@ CODIGOS_ESTADO_CURP = {
     'VZ': 'VERACRUZ', 'YN': 'YUCATÁN', 'ZS': 'ZACATECAS', 'NE': 'EXTRANJERO'
 }
 
+# 🔢 Diccionario que mapea códigos numéricos de estado a nombres completos
+# 🗳️ Usado para decodificar el estado desde la Clave de Elector
 CODIGOS_ESTADO_ELECTOR = {
     '01': 'AGUASCALIENTES', '02': 'BAJA CALIFORNIA', '03': 'BAJA CALIFORNIA SUR',
     '04': 'CAMPECHE', '05': 'COAHUILA', '06': 'COLIMA', '07': 'CHIAPAS',
@@ -122,15 +148,24 @@ CODIGOS_ESTADO_ELECTOR = {
 }
 
 # ============================================================
-# 🔍 OCR Engine (PaddleOCR)
+# 🔍 CONFIGURACIÓN DEL MOTOR OCR (PADDLEOCR)
 # ============================================================
 def _build_ocr_engine() -> PaddleOCR:
-    """🏭 Crea una instancia de PaddleOCR."""
+    """🏭 Crea y configura una instancia del motor PaddleOCR.
+    
+    Returns:
+        PaddleOCR: Instancia configurada del motor OCR
+    
+    Configuraciones deshabilitadas para mayor velocidad:
+    - use_doc_orientation_classify: No clasifica orientación del documento
+    - use_doc_unwarping: No corrige deformación de documento
+    - use_textline_orientation: No corrige orientación de líneas de texto
+    """
     return PaddleOCR(
-        use_doc_orientation_classify=False,
-        use_doc_unwarping=False,
-        use_textline_orientation=False,
-        lang="es",
+        use_doc_orientation_classify=False,  # 🚫 Sin clasificación de orientación
+        use_doc_unwarping=False,  # 🚫 Sin corrección de deformación
+        use_textline_orientation=False,  # 🚫 Sin corrección de orientación de texto
+        lang="es",  # 🇪🇸 Idioma español
     )
 
 
@@ -139,77 +174,77 @@ def _build_ocr_engine() -> PaddleOCR:
 # ============================================================
 def clasificar_tipo_credencial(textos_limpios: List[str]) -> str:
     """
-    🪪 Clasifica el tipo de credencial: C (IFE), D, GH.
-
-    ✅ FIX IMPORTANTE:
-    - El tipo C (IFE) también contiene "INSTITUTO" y "ELECTORAL" y "CREDENCIAL PARA VOTAR"
-      y además trae "CLAVE DE ELECTOR", por eso se estaba yendo a GH.
-    - Ahora detectamos explícitamente IFE/REGISTRO FEDERAL DE ELECTORES (C) ANTES que GH.
-
-    Reglas:
-    - Si detecta IFE / REGISTRO FEDERAL DE ELECTORES / INSTITUTO FEDERAL ELECTORAL => "C"
-    - Si detecta INE + CREDENCIAL PARA VOTAR + CLAVE DE ELECTOR => "GH"
-    - Si detecta INE + CREDENCIAL PARA VOTAR => "D"
-    - Default => "D"
+    🪪 Clasifica automáticamente el tipo de credencial INE/IFE.
+    
+    🎯 Tipos posibles:
+    - "C": Credencial IFE antigua (Instituto Federal Electoral)
+    - "D": Credencial INE estándar
+    - "GH": Credencial INE con clave de elector
+    
+    🔍 Estrategia de clasificación:
+    1. Primero detecta IFE (tipo C) por palabras clave específicas
+    2. Luego diferencia entre D y GH por presencia de "CLAVE DE ELECTOR"
+    
+    Args:
+        textos_limpios (List[str]): Lista de textos extraídos por OCR
+        
+    Returns:
+        str: "C", "D" o "GH"
     """
-
-    # Unificar a un solo texto para búsqueda flexible
+    # 📝 Unifica todos los textos en uno solo para búsqueda más fácil
     texto_completo = " ".join([t.upper().strip() for t in textos_limpios if t]).strip()
 
     # ============================================================
-    # ✅ 1) DETECTOR TIPO C (IFE)
+    # ✅ 1) DETECCIÓN DE TIPO C (IFE ANTIGUA)
     # ============================================================
-    # Muchos IFE traen:
-    # - "INSTITUTO FEDERAL ELECTORAL"
-    # - "REGISTRO FEDERAL DE ELECTORES"
-    # - y/o se menciona "IFE"
+    # 🔎 Busca indicadores específicos de credenciales IFE
     es_ife = (
-        "INSTITUTO FEDERAL ELECTORAL" in texto_completo
-        or "REGISTRO FEDERAL DE ELECTORES" in texto_completo
-        or re.search(r"\bIFE\b", texto_completo) is not None
-        or ("FEDERAL" in texto_completo and "ELECTORAL" in texto_completo and "REGISTRO" in texto_completo)
+        "INSTITUTO FEDERAL ELECTORAL" in texto_completo  # 🏛️ Nombre completo del IFE
+        or "REGISTRO FEDERAL DE ELECTORES" in texto_completo  # 📋 Texto característico
+        or re.search(r"\bIFE\b", texto_completo) is not None  # 🔠 Siglas IFE
+        or ("FEDERAL" in texto_completo and "ELECTORAL" in texto_completo and "REGISTRO" in texto_completo)  # 🧩 Combinación de palabras
     )
 
     if es_ife:
-        return "C"
+        return "C"  # ✅ Retorna tipo C (IFE)
 
     # ============================================================
-    # ✅ 2) DETECTORES BASE INE
+    # ✅ 2) DETECCIÓN DE CREDENCIALES INE (D O GH)
     # ============================================================
-    # OJO: antes "INSTITUTO"+"ELECTORAL" también matcheaba IFE.
-    # Ya lo filtramos arriba, aquí ya asumimos INE cuando aplique.
+    # 🔍 Verifica si es una credencial INE (Instituto Nacional Electoral)
     tiene_ine = (
-        ("INSTITUTO" in texto_completo and "ELECTORAL" in texto_completo)
-        and ("NACIONAL" in texto_completo or re.search(r"\bINE\b", texto_completo) is not None)
+        ("INSTITUTO" in texto_completo and "ELECTORAL" in texto_completo)  # 🏢 "INSTITUTO" + "ELECTORAL"
+        and ("NACIONAL" in texto_completo or re.search(r"\bINE\b", texto_completo) is not None)  # 🇲🇽 "NACIONAL" o siglas INE
     )
 
+    # 📄 Verifica si es una "CREDENCIAL PARA VOTAR"
     tiene_credencial_para_votar = "CREDENCIAL" in texto_completo and "VOTAR" in texto_completo
 
-    # Heurísticas que suelen aparecer en anverso INE
+    # 🔤 Busca CURP en el texto (patrón específico)
     tiene_curp = (
-        "CURP" in texto_completo
-        or re.search(r'\b[A-Z]{4}\d{6}[HMX][A-Z]{5,6}[0-9A-Z]\b', texto_completo) is not None
+        "CURP" in texto_completo  # 📛 Texto "CURP"
+        or re.search(r'\b[A-Z]{4}\d{6}[HMX][A-Z]{5,6}[0-9A-Z]\b', texto_completo) is not None  # 🧬 Patrón de CURP
     )
 
-    # ✅ "CLAVE DE ELECTOR" flexible (OCR puede pegar o meter espacios raros)
+    # 🔑 Busca "CLAVE DE ELECTOR" con flexibilidad (OCR puede tener errores)
     tiene_clave_elector_flexible = (
-        re.search(r'CLAVE\s*DE\s*ELECTOR', texto_completo) is not None
-        or ("CLAVE" in texto_completo and "ELECTOR" in texto_completo)
-        or re.search(r'CLAVE\s*DE\s*ELEC', texto_completo) is not None
+        re.search(r'CLAVE\s*DE\s*ELECTOR', texto_completo) is not None  # 🔍 Regex flexible
+        or ("CLAVE" in texto_completo and "ELECTOR" in texto_completo)  # 🧩 Ambas palabras
+        or re.search(r'CLAVE\s*DE\s*ELEC', texto_completo) is not None  # 🔠 Variación corta
     )
 
     # ============================================================
-    # ✅ 3) CLASIFICACIÓN INE (GH / D)
+    # ✅ 3) CLASIFICACIÓN FINAL INE (GH vs D)
     # ============================================================
-    # GH suele tener INE + credencial para votar + clave elector (flexible).
+    # 🎯 Tipo GH: INE + Credencial para votar + Clave de elector
     if tiene_ine and tiene_credencial_para_votar and tiene_clave_elector_flexible:
-        return "GH"
+        return "GH"  # ✅ Tipo GH (con clave de elector)
 
-    # Si es INE pero no detectamos la clave elector, lo dejamos como D
+    # 🎯 Tipo D: INE + Credencial para votar (sin clave de elector clara)
     if tiene_ine and tiene_credencial_para_votar:
-        return "D"
+        return "D"  # ✅ Tipo D (estándar)
 
-    # Default (no romper pipeline)
+    # ⚠️ Default: Si no se clasifica, asume tipo D
     return "D"
 
 
@@ -218,10 +253,28 @@ def clasificar_tipo_credencial(textos_limpios: List[str]) -> str:
 # ============================================================
 def extraer_datos_desde_curp(curp: str) -> Dict[str, str]:
     """
-    📊 Extrae información validada desde la CURP.
+    📊 Extrae información demográfica validada desde una CURP.
     
-    Estructura CURP: AAAA BB CC DD E F G H I J K L M N Ñ O P
+    🧬 Estructura de la CURP (18 caracteres):
+    - Posiciones 1-4: Letras iniciales apellidos y nombre
+    - Posiciones 5-10: Fecha de nacimiento (AAMMDD)
+    - Posición 11: Sexo (H/M)
+    - Posiciones 12-13: Entidad federativa de nacimiento
+    - Posiciones 14-16: Consonantes internas
+    - Posición 17: Diferencia entre nombres similares
+    - Posición 18: Dígito verificador
+    
+    Args:
+        curp (str): CURP extraída del texto OCR
+        
+    Returns:
+        Dict[str, str]: Diccionario con datos extraídos:
+            - sexo: "H", "M" o "X"
+            - fecha_nacimiento: Formato DD/MM/YYYY
+            - entidad_nacimiento: Código de 2 letras
+            - estado: Nombre completo del estado
     """
+    # 📦 Diccionario inicial con valores vacíos
     datos = {
         "sexo": "",
         "fecha_nacimiento": "",
@@ -229,38 +282,41 @@ def extraer_datos_desde_curp(curp: str) -> Dict[str, str]:
         "estado": ""
     }
     
+    # 🚫 Validación: CURP debe tener al menos 16 caracteres
     if not curp or len(curp) < 16:
         return datos
     
-    # 1. Sexo (10º carácter)
+    # 1. 🔍 EXTRACCIÓN DE SEXO (10º carácter, índice 10)
     if len(curp) >= 10:
-        sexo_char = curp[10].upper()
+        sexo_char = curp[10].upper()  # 📍 Carácter en posición 10 (0-indexed)
         if sexo_char == 'H':
-            datos["sexo"] = "H"
+            datos["sexo"] = "H"  # 👨 Masculino
         elif sexo_char == 'M':
-            datos["sexo"] = "M"
+            datos["sexo"] = "M"  # 👩 Femenino
         else:
-            datos["sexo"] = "X"
+            datos["sexo"] = "X"  # ❓ No especificado
     
-    # 2. Fecha de nacimiento (5º al 10º carácter: AAMMDD)
+    # 2. 📅 EXTRACCIÓN DE FECHA DE NACIMIENTO (posiciones 5-10: AAMMDD)
     if len(curp) >= 10:
-        anio = curp[4:6]  # Últimos 2 dígitos del año
-        mes = curp[6:8]
-        dia = curp[8:10]
+        anio = curp[4:6]  # 🗓️ Últimos 2 dígitos del año (posiciones 5-6)
+        mes = curp[6:8]   # 📅 Mes (posiciones 7-8)
+        dia = curp[8:10]  # 📆 Día (posiciones 9-10)
         
-        # Determinar siglo (19xx o 20xx)
-        # Asumimos que si el año es mayor a año actual - 100, es 1900, sino 2000
-        año_actual_2dig = datetime.now().year % 100
-        año_num = int(anio)
+        # 🤔 Determinación del siglo (1900s o 2000s)
+        año_actual_2dig = datetime.now().year % 100  # 🎯 Últimos 2 dígitos del año actual
+        año_num = int(anio)  # 🔢 Convierte a número
+        
+        # 🕰️ Si el año extraído es mayor al año actual, asume siglo 19, sino 20
         siglo = "19" if año_num > año_actual_2dig else "20"
         
+        # 🗓️ Formatea fecha completa DD/MM/YYYY
         datos["fecha_nacimiento"] = f"{dia}/{mes}/{siglo}{anio}"
     
-    # 3. Entidad de nacimiento (12º y 13º carácter)
+    # 3. 🗺️ EXTRACCIÓN DE ENTIDAD DE NACIMIENTO (posiciones 12-13)
     if len(curp) >= 13:
-        codigo_estado = curp[11:13].upper()
-        datos["entidad_nacimiento"] = codigo_estado
-        datos["estado"] = CODIGOS_ESTADO_CURP.get(codigo_estado, "")
+        codigo_estado = curp[11:13].upper()  # 📍 Código de 2 letras (posiciones 12-13)
+        datos["entidad_nacimiento"] = codigo_estado  # 🔤 Código (ej: "DF")
+        datos["estado"] = CODIGOS_ESTADO_CURP.get(codigo_estado, "")  # 🏙️ Nombre completo
     
     return datos
 
@@ -270,37 +326,54 @@ def extraer_datos_desde_curp(curp: str) -> Dict[str, str]:
 # ============================================================
 def extraer_datos_desde_clave_elector(clave: str) -> Dict[str, str]:
     """
-    📍 Extrae información desde la Clave de Elector.
+    📍 Extrae información geográfica y temporal desde la Clave de Elector.
     
-    Estructura: AAAA BB CCC DD E F
+    🔑 Estructura típica de Clave de Elector (18-19 caracteres):
+    - Posiciones 1-2: Código del estado (01-32)
+    - Posiciones 3-6: Municipio
+    - Posiciones 7-10: Sección electoral
+    - Posiciones 11-14: Año de registro
+    - Posiciones 15-18: Número consecutivo
+    
+    Args:
+        clave (str): Clave de elector extraída del texto OCR
+        
+    Returns:
+        Dict[str, str]: Diccionario con datos extraídos:
+            - estado_clave: Nombre del estado
+            - seccion_clave: Sección electoral (4 dígitos)
+            - anio_registro_clave: Año de registro
     """
+    # 📦 Diccionario inicial con valores vacíos
     datos = {
         "estado_clave": "",
         "seccion_clave": "",
         "anio_registro_clave": ""
     }
     
+    # 🚫 Validación: Clave debe tener al menos 13 caracteres
     if not clave or len(clave) < 13:
         return datos
     
-    # 1. Estado (primeros 2 dígitos)
+    # 1. 🗺️ EXTRACCIÓN DEL ESTADO (primeros 2 dígitos)
     if len(clave) >= 2:
-        codigo_estado = clave[0:2]
-        datos["estado_clave"] = CODIGOS_ESTADO_ELECTOR.get(codigo_estado, "")
+        codigo_estado = clave[0:2]  # 🔢 Primeros 2 caracteres
+        datos["estado_clave"] = CODIGOS_ESTADO_ELECTOR.get(codigo_estado, "")  # 🏙️ Nombre del estado
     
-    # 2. Sección (posiciones 5-6, considerando variaciones)
-    # Buscar 4 dígitos consecutivos que puedan ser sección
+    # 2. 📍 EXTRACCIÓN DE SECCIÓN ELECTORAL
+    # 🔍 Busca 4 dígitos consecutivos que representen la sección
     seccion_match = re.search(r'\b(\d{4})\b', clave)
     if seccion_match:
-        datos["seccion_clave"] = seccion_match.group(1)
+        datos["seccion_clave"] = seccion_match.group(1)  # ✅ 4 dígitos encontrados
     
-    # 3. Año de registro (varía según posición)
-    # Buscar patrón de 4 dígitos que sea un año plausible (1900-2025)
+    # 3. 📅 EXTRACCIÓN DE AÑO DE REGISTRO
+    # 🔎 Busca patrones de 4 dígitos que sean años plausibles (1900-2025)
     for match in re.finditer(r'\b(19\d{2}|20[0-2]\d)\b', clave):
-        año = int(match.group())
+        año = int(match.group())  # 🔢 Convierte a número
+        # ✅ Valida que sea un año razonable
         if 1900 <= año <= datetime.now().year + 1:
-            datos["anio_registro_clave"] = str(año)
-            break
+            datos["anio_registro_clave"] = str(año)  # 🗓️ Año válido encontrado
+            break  # ⏹️ Solo toma el primer año válido
     
     return datos
 
@@ -310,48 +383,66 @@ def extraer_datos_desde_clave_elector(clave: str) -> Dict[str, str]:
 # ============================================================
 def limpiar_y_validar_nombre(nombre: str) -> str:
     """
-    🧹 Limpia y valida el nombre extraído, removiendo palabras erróneas.
+    🧹 Limpia y valida un nombre extraído por OCR.
+    
+    🚫 Elimina palabras que NO deberían estar en un nombre:
+    - Términos administrativos ("EDAD", "AÑOS", "DOMICILIO")
+    - Palabras relacionadas con la credencial ("CURP", "CLAVE")
+    - Números y códigos
+    
+    Args:
+        nombre (str): Nombre crudo extraído por OCR
+        
+    Returns:
+        str: Nombre limpio y validado
     """
     if not nombre:
-        return ""
+        return ""  # 🚫 Retorna vacío si no hay nombre
     
-    # Palabras que NO deberían estar en un nombre
-
-    
+    # 🚫 LISTA DE PALABRAS INVÁLIDAS EN NOMBRES
     palabras_invalidas = [
-    'EDAD', 'AÑOS', 'AÑO', 'EDAD:', 'EDADES', 'FECHA', 'NACIMIENTO',
-    'DOMICILIO', 'CALLE', 'COLONIA', 'ESTADO', 'MUNICIPIO', 'CIUDAD',
-    'CP', 'C.P.', 'CÓDIGO', 'POSTAL', 'SECCIÓN', 'SECCION', 'CLAVE',
-    'ELECTOR', 'CURP', 'VIGENCIA', 'VIGENTE', 'INSTITUTO', 'NACIONAL',
-    'FEDERAL', 'ELECTORAL', 'CREDENCIAL', 'VOTAR', 'PARA', 'MÉXICO',
-    'REGISTRO'  # ✅ evita "DE REGISTRO"
+        'EDAD', 'AÑOS', 'AÑO', 'EDAD:', 'EDADES', 'FECHA', 'NACIMIENTO',
+        'DOMICILIO', 'CALLE', 'COLONIA', 'ESTADO', 'MUNICIPIO', 'CIUDAD',
+        'CP', 'C.P.', 'CÓDIGO', 'POSTAL', 'SECCIÓN', 'SECCION', 'CLAVE',
+        'ELECTOR', 'CURP', 'VIGENCIA', 'VIGENTE', 'INSTITUTO', 'NACIONAL',
+        'FEDERAL', 'ELECTORAL', 'CREDENCIAL', 'VOTAR', 'PARA', 'MÉXICO',
+        'REGISTRO'  # ✅ Evita "DE REGISTRO" en nombres
     ]
     
-    # Convertir a mayúsculas para comparación
+    # 🔠 Convierte a mayúsculas para comparación sin case-sensitive
     nombre_upper = nombre.upper()
     
-    # Remover palabras inválidas
+    # 🧩 Separa el nombre en palabras individuales
     palabras = nombre_upper.split()
-    palabras_limpias = []
+    palabras_limpias = []  # 📦 Lista para palabras válidas
     
     for palabra in palabras:
+        # 🧼 Limpia caracteres no alfabéticos (mantiene Ñ y tildes)
         palabra_limpia = re.sub(r'[^\wÁÉÍÓÚÜÑ]', '', palabra)
+        
+        # ✅ CRITERIOS DE VALIDACIÓN:
+        # 1. No vacía
+        # 2. Más de 1 carácter
+        # 3. No está en la lista de palabras inválidas
+        # 4. No es solo dígitos
+        # 5. No es patrón mixto de números y letras
         if (palabra_limpia and 
             len(palabra_limpia) > 1 and 
             palabra_limpia not in palabras_invalidas and
             not palabra_limpia.isdigit() and
             not re.match(r'^\d+[A-Z]*$', palabra_limpia)):
-            palabras_limpias.append(palabra)
+            palabras_limpias.append(palabra)  # ✅ Palabra válida
     
-    # Reconstruir nombre manteniendo capitalización original
-    nombre_original = nombre.split()
-    nombre_final = []
+    # 🔄 Reconstruye el nombre manteniendo la capitalización original
+    nombre_original = nombre.split()  # 🧩 Palabras con formato original
+    nombre_final = []  # 📦 Nombre final reconstruido
     
     for palabra in nombre_original:
+        # 🔍 Verifica si la palabra (en mayúsculas) está en las palabras limpias
         if palabra.upper() in [p.upper() for p in palabras_limpias]:
-            nombre_final.append(palabra)
+            nombre_final.append(palabra)  # ✅ Mantiene formato original
     
-    return " ".join(nombre_final)
+    return " ".join(nombre_final)  # 🔗 Une palabras con espacios
 
 
 # ============================================================
@@ -359,107 +450,124 @@ def limpiar_y_validar_nombre(nombre: str) -> str:
 # ============================================================
 def extraer_nombre_mejorado(texts: List[str], tipo_credencial: str) -> str:
     """
-    👤 Extrae el nombre completo desde los textos OCR.
-
-    ✅ FIX:
-    - En IFE tipo C aparece "EDAD" y "SEXO" cerca del nombre; OCR a veces los pega en la misma línea.
-      Ejemplo malo: "BLANCO EDAD BARRADAS JESUS ALEXIS"
-      Ejemplo bueno: "BLANCO BARRADAS JESUS ALEXIS"
-    - Se agrega EDAD como stop label + se limpia SIEMPRE con limpiar_y_validar_nombre().
-
-    ✅ Compatible con GH/D también (no rompe lo que ya funcionaba).
+    👤 Extrae el nombre completo desde textos OCR con estrategias específicas.
+    
+    🎯 Estrategias implementadas:
+    1. 🏠 ANCLA POR "DOMICILIO": Busca nombre arriba de la palabra "DOMICILIO"
+    2. 🏷️ BUSQUEDA POR "NOMBRE": Para tipo GH, busca etiqueta "NOMBRE"
+    3. 🔄 FALLBACK GENERAL: Búsqueda heurística general
+    
+    ✅ FIX IMPORTANTE: Maneja casos donde OCR pega "EDAD" al nombre
+    
+    Args:
+        texts (List[str]): Lista de textos extraídos por OCR
+        tipo_credencial (str): "C", "D" o "GH"
+        
+    Returns:
+        str: Nombre completo extraído y limpiado
     """
+    # 🧼 Normaliza los textos (elimina espacios múltiples, etc.)
     textos_limpios = normalizar_textos(texts)
 
-    # 🚫 Palabras que NO deben considerarse como parte del nombre
+    # 🚫 EXPRESIONES REGULARES PARA FILTRAR
     blacklist_regex = r'(INSTITUTO|NACIONAL|ELECTORAL|CREDENCIAL|PARA\s+VOTAR|M[EÉ]XICO|ESTADOS\s+UNIDOS)'
-    # 👇 FIX: agregar EDAD aquí
+    # 🛑 STOP LABELS: Palabras que indican fin del nombre
     stop_labels_regex = r'(DOMICILIO|CLAVE|CURP|FECHA|SECCI[ÓO]N|AÑO|REGISTRO|VIGENCIA|SEXO|EDAD)'
 
     # ============================================================
-    # ✅ ESTRATEGIA 0 (UNIVERSAL): ANCLA POR "DOMICILIO"
-    # - Funciona muy bien en GH/D y también en C si existe DOMICILIO
+    # ✅ ESTRATEGIA 0: ANCLA POR "DOMICILIO" (UNIVERSAL)
     # ============================================================
+    # 🎯 Busca la palabra "DOMICILIO" como punto de referencia
     idx_dom = None
     for i, line in enumerate(textos_limpios):
         if "DOMICILIO" in line.upper():
-            idx_dom = i
+            idx_dom = i  # 📍 Índice donde aparece "DOMICILIO"
             break
 
     if idx_dom is not None:
+        # 🔍 Busca en las 12 líneas anteriores a "DOMICILIO"
         ventana = textos_limpios[max(0, idx_dom - 12):idx_dom]
-        candidatos = []
+        candidatos = []  # 📦 Lista de candidatos a nombre
 
         for s in ventana:
-            s = s.strip()
-            up = s.upper().strip()
+            s = s.strip()  # 🧼 Limpia espacios
+            up = s.upper().strip()  # 🔠 Versión mayúsculas
 
-            if not s:
+            if not s:  # 🚫 Ignora vacíos
                 continue
-            if re.fullmatch(r'NOMBRE', up):
+            if re.fullmatch(r'NOMBRE', up):  # 🚫 Ignora solo "NOMBRE"
                 continue
-            if re.search(stop_labels_regex, up):
+            if re.search(stop_labels_regex, up):  # 🛑 Para en stop labels
                 continue
-            if re.search(blacklist_regex, up):
+            if re.search(blacklist_regex, up):  # 🚫 Filtra blacklist
                 continue
-            if any(ch.isdigit() for ch in up):
+            if any(ch.isdigit() for ch in up):  # 🔢 Filtra números
                 continue
-            # Evitar líneas muy cortas o ruido
+            # 🚫 Ignora líneas muy cortas (probablemente ruido)
             if len(re.sub(r'[^A-ZÁÉÍÓÚÜÑ]', '', up)) < 2:
                 continue
 
-            candidatos.append(s)
+            candidatos.append(s)  # ✅ Agrega candidato válido
 
-        # Devolver las últimas 2-4 líneas como nombre completo
+        # 🎯 Toma las últimas 2-4 líneas como nombre completo
         if candidatos:
             nombre_candidato = " ".join(candidatos[-4:]).strip()
+            # 🧼 Limpia y valida el nombre
             nombre_candidato = limpiar_y_validar_nombre(nombre_candidato).strip()
 
+            # ✅ Requiere al menos 2 palabras para ser válido
             if len(nombre_candidato.split()) >= 2:
                 return nombre_candidato
 
     # ============================================================
-    # 🪪 ESTRATEGIA GH: "NOMBRE" + nombre en varias líneas
+    # 🪪 ESTRATEGIA ESPECÍFICA PARA TIPO GH
     # ============================================================
     if tipo_credencial == "GH":
+        # 🔍 Busca línea que solo diga "NOMBRE"
         for i, line in enumerate(textos_limpios):
             up = line.upper().strip()
 
             if re.fullmatch(r'^NOMBRE\s*$', up):
-                partes: List[str] = []
+                partes: List[str] = []  # 📦 Partes del nombre
 
+                # 🔍 Busca en las siguientes 7 líneas después de "NOMBRE"
                 for j in range(i + 1, min(i + 7, len(textos_limpios))):
                     s = textos_limpios[j].strip()
                     s_up = s.upper().strip()
 
-                    if re.search(stop_labels_regex, s_up):
+                    if re.search(stop_labels_regex, s_up):  # 🛑 Stop label
                         break
-                    if re.search(blacklist_regex, s_up):
+                    if re.search(blacklist_regex, s_up):  # 🚫 Blacklist
                         continue
-                    if not s:
+                    if not s:  # 🚫 Vacío
                         continue
-                    if any(ch.isdigit() for ch in s_up):
+                    if any(ch.isdigit() for ch in s_up):  # 🔢 Números
                         continue
+                    # 🚫 Texto muy corto
                     if len(re.sub(r'[^A-ZÁÉÍÓÚÜÑ]', '', s_up)) < 2:
                         continue
 
-                    partes.append(s)
+                    partes.append(s)  # ✅ Parte válida del nombre
 
+                # 🔗 Une las partes y limpia
                 nombre_candidato = " ".join(partes).strip()
                 nombre_candidato = limpiar_y_validar_nombre(nombre_candidato).strip()
 
+                # ✅ Requiere al menos 2 palabras
                 if len(nombre_candidato.split()) >= 2:
                     return nombre_candidato
 
-        # "NOMBRE: ..." misma línea
+        # 🔍 Busca "NOMBRE: ..." en la misma línea
         for line in textos_limpios:
             up = line.upper()
+            # 🎯 Regex para "NOMBRE:" seguido del nombre
             m = re.search(r'NOMBRE\s*[:\-]?\s*([A-ZÁÉÍÓÚÜÑ\s\.]{3,})', up)
             if m:
                 nombre_candidato = m.group(1).strip()
                 nombre_candidato = limpiar_y_validar_nombre(nombre_candidato).strip()
 
                 nc_up = nombre_candidato.upper()
+                # ✅ Validaciones múltiples
                 if (
                     len(nombre_candidato.split()) >= 2
                     and not re.search(stop_labels_regex, nc_up)
@@ -469,96 +577,115 @@ def extraer_nombre_mejorado(texts: List[str], tipo_credencial: str) -> str:
                     return nombre_candidato
 
     # ============================================================
-    # 🧠 FALLBACK GENERAL (para C u otros casos raros)
+    # 🔄 ESTRATEGIA FALLBACK GENERAL
     # ============================================================
-    candidatos = []
+    candidatos = []  # 📦 Candidatos encontrados
     for line in textos_limpios:
         up = line.upper().strip()
-        if not up:
+        if not up:  # 🚫 Vacío
             continue
-        if len(up.split()) < 2:
+        if len(up.split()) < 2:  # 🚫 Menos de 2 palabras
             continue
-        if re.search(stop_labels_regex, up):
+        if re.search(stop_labels_regex, up):  # 🛑 Stop label
             continue
-        if re.search(blacklist_regex, up):
+        if re.search(blacklist_regex, up):  # 🚫 Blacklist
             continue
-        if any(ch.isdigit() for ch in up):
+        if any(ch.isdigit() for ch in up):  # 🔢 Números
             continue
 
+        # 🧼 Limpia y valida candidato
         candidato = limpiar_y_validar_nombre(line.strip()).strip()
-        if len(candidato.split()) >= 2:
+        if len(candidato.split()) >= 2:  # ✅ Al menos 2 palabras
             candidatos.append(candidato)
 
+    # 🎯 Retorna el primer candidato válido
     if candidatos:
         return candidatos[0]
 
-    return ""
+    return ""  # 🚫 Sin nombre encontrado
+
 
 # ============================================================
 # 📅 CORRECCIÓN: EXTRACCIÓN DE VIGENCIA
 # ============================================================
 def extraer_vigencia_correcta(texts: List[str], tipo_credencial: str) -> str:
     """
-    📅 Extrae correctamente la vigencia de la credencial.
-    CORREGIDO: Maneja específicamente formato "2021 - 2031"
+    📅 Extrae correctamente el período de vigencia de la credencial.
+    
+    🎯 Maneja formatos comunes:
+    - "2021 - 2031"
+    - "VIGENCIA: 2021-2031"
+    - "VIGENCIA 2021 2031"
+    
+    Args:
+        texts (List[str]): Lista de textos extraídos por OCR
+        tipo_credencial (str): Tipo de credencial (no usado aquí pero mantenido)
+        
+    Returns:
+        str: Período de vigencia en formato "AAAA - AAAA"
     """
+    # 🧼 Normaliza textos
     textos_limpios = normalizar_textos(texts)
     
-    # Buscar patrón específico de vigencia
+    # 🔍 BUSQUEDA POR PATRÓN "VIGENCIA" EXPLÍCITO
     for line in textos_limpios:
         line_upper = line.upper()
         
-        # Buscar línea que contenga "VIGENCIA"
+        # 🎯 Busca línea que contenga "VIGENCIA"
         if "VIGENCIA" in line_upper:
-            # Intentar extraer de la misma línea
+            # 🔍 Intenta extraer de la misma línea: "VIGENCIA: 2021-2031"
             match = re.search(r'VIGENCIA\s*[:\-]?\s*(\d{4}\s*[-\s]+\s*\d{4})', line_upper)
             if match:
                 vigencia = match.group(1)
-                # Limpiar formato
+                # 🧼 Limpia formato: estandariza espacios y guiones
                 vigencia = re.sub(r'\s+', ' ', vigencia.replace('-', ' - ').strip())
-                return vigencia
+                return vigencia  # ✅ Vigencia encontrada
             
-            # Si no está en la misma línea, buscar en siguientes líneas
+            # 🔍 Si no está en la misma línea, busca en líneas siguientes
             idx = textos_limpios.index(line)
             for j in range(idx + 1, min(idx + 3, len(textos_limpios))):
                 siguiente = textos_limpios[j]
-                # Buscar patrón de dos años separados por guión
+                # 🎯 Busca patrón de dos años con guión
                 match = re.search(r'(\d{4}\s*[-\s]+\s*\d{4})', siguiente)
                 if match:
                     vigencia = match.group(1)
+                    # 🧼 Limpia formato
                     vigencia = re.sub(r'\s+', ' ', vigencia.replace('-', ' - ').strip())
-                    return vigencia
+                    return vigencia  # ✅ Vigencia encontrada
         
-        # Buscar directamente patrón de años con guión
+        # 🔍 BUSQUEDA DIRECTA DE PATRÓN DE AÑOS CON GUION
+        # 🎯 Busca "2021-2031" directamente en cualquier línea
         match = re.search(r'\b(\d{4}\s*[-]\s*\d{4})\b', line)
         if match:
-            # Verificar que sean años plausibles (1900-2099)
+            # ✅ Valida que sean años plausibles
             años = re.findall(r'\d{4}', match.group(1))
             if len(años) == 2:
                 año1, año2 = int(años[0]), int(años[1])
+                # 🕰️ Rango válido: 1900-2099 y año2 > año1
                 if 1900 <= año1 <= 2099 and 1900 <= año2 <= 2099 and año2 > año1:
                     vigencia = match.group(1)
+                    # 🧼 Limpia formato
                     vigencia = re.sub(r'\s+', ' ', vigencia.replace('-', ' - ').strip())
-                    return vigencia
+                    return vigencia  # ✅ Vigencia válida
     
-    # Buscar patrón "VIGENCIA" seguido de años
+    # 🔍 BUSQUEDA POR "VIGENCIA" SEGUIDO DE AÑOS SEPARADOS
     for i, line in enumerate(textos_limpios):
         if "VIGENCIA" in line.upper():
-            # Revisar próximas 3 líneas
+            # 🔍 Revisa las próximas 3 líneas
             for j in range(i, min(i + 3, len(textos_limpios))):
                 siguiente = textos_limpios[j]
-                # Buscar cualquier patrón de año
+                # 🎯 Busca cualquier patrón de año (1900-2099)
                 años = re.findall(r'\b(19\d{2}|20\d{2})\b', siguiente)
                 if len(años) >= 2:
-                    return f"{años[0]} - {años[1]}"
+                    return f"{años[0]} - {años[1]}"  # ✅ Dos años encontrados
                 elif len(años) == 1 and j > i:
-                    # Si solo hay un año en línea siguiente, podría ser inicio de vigencia
+                    # 🔍 Si solo hay un año, busca el segundo en siguiente línea
                     siguiente2 = textos_limpios[j + 1] if j + 1 < len(textos_limpios) else ""
                     año2_match = re.search(r'\b(19\d{2}|20\d{2})\b', siguiente2)
                     if año2_match:
-                        return f"{años[0]} - {año2_match.group(1)}"
+                        return f"{años[0]} - {año2_match.group(1)}"  # ✅ Segundo año encontrado
     
-    return ""
+    return ""  # 🚫 Sin vigencia encontrada
 
 
 # ============================================================
@@ -566,231 +693,328 @@ def extraer_vigencia_correcta(texts: List[str], tipo_credencial: str) -> str:
 # ============================================================
 def extraer_campos_ine_mejorado(texts: List[str]) -> Dict[str, Any]:
     """
-    🪪 Extrae campos del ANVERSO con validación desde CURP y Clave de Elector.
-    CORREGIDO: Nombre y vigencia.
+    🪪 Función principal que extrae y valida todos los campos del ANVERSO.
+    
+    🎯 Flujo de procesamiento:
+    1. 📝 Clasifica tipo de credencial (C/D/GH)
+    2. 🔍 Extrae CURP y Clave de Elector
+    3. 🧠 Valida datos desde CURP y Clave
+    4. 👤 Extrae nombre mejorado
+    5. 📅 Extrae vigencia corregida
+    6. 🏠 Extrae domicilio y otros campos
+    7. ✅ Completa datos faltantes con validación
+    
+    Args:
+        texts (List[str]): Lista de textos extraídos por OCR
+        
+    Returns:
+        Dict[str, Any]: Diccionario con todos los campos extraídos
     """
-    # Normalizar textos una sola vez
+    # 🧼 1. NORMALIZACIÓN INICIAL
     textos_limpios = normalizar_textos(texts)
     
-    # 1. Clasificar tipo de credencial
+    # 🏷️ 2. CLASIFICACIÓN DE TIPO DE CREDENCIAL
     tipo_credencial = clasificar_tipo_credencial(textos_limpios)
     
-    # 2. Extraer CURP y Clave de Elector (usar textos_limpios)
+    # 🔍 3. EXTRACCIÓN DE CURP Y CLAVE DE ELECTOR
     curp_crudo = buscar_en_lista(r'([A-Z]{4}[0-9]{6}[HMX][A-Z]{5,6}[0-9A-Z])', textos_limpios)
     clave_elector_crudo = buscar_en_lista(r'\b([A-Z0-9]{18})\b', textos_limpios) or buscar_en_lista(r'\b([A-Z]{6}\d{8,10}[A-Z0-9]{2,4})\b', textos_limpios)
     
-    # 3. Extraer datos desde CURP y Clave de Elector
+    # 🧠 4. VALIDACIÓN DESDE CURP Y CLAVE
     datos_curp = extraer_datos_desde_curp(curp_crudo)
     datos_clave = extraer_datos_desde_clave_elector(clave_elector_crudo)
     
-    # 4. Extraer nombre mejorado (CORREGIDO)
+    # 👤 5. EXTRACCIÓN DE NOMBRE MEJORADO (CORREGIDO)
     nombre_completo = extraer_nombre_mejorado(textos_limpios, tipo_credencial)
     
-    # 5. Extraer vigencia corregida (CORREGIDO)
+    # 📅 6. EXTRACCIÓN DE VIGENCIA CORREGIDA
     vigencia_correcta = extraer_vigencia_correcta(textos_limpios, tipo_credencial)
     
-    # 6. Extraer otros campos (usar textos_limpios)
+    # 📦 7. EXTRACCIÓN DE OTROS CAMPOS BÁSICOS
     campos: Dict[str, Any] = {
-        "tipo_credencial": tipo_credencial,
-        "es_ine": "INSTITUTO NACIONAL ELECTORAL" in " ".join([t.upper() for t in textos_limpios]),
-        "nombre": nombre_completo,
-        "curp": curp_crudo,
-        "clave_elector": clave_elector_crudo,
-        "fecha_nacimiento": buscar_en_lista(r'\b(\d{2}/\d{2}/\d{4})\b', textos_limpios),
-        "anio_registro": buscar_en_lista(r'(\d{4}\s\d+)', textos_limpios),
-        "seccion": buscar_seccion(textos_limpios),
-        "vigencia": vigencia_correcta,  # Usar función corregida
-        "sexo": buscar_en_lista(r'\b(H|M|X)\b', textos_limpios),
-        "pais": "Mex",
+        "tipo_credencial": tipo_credencial,  # 🏷️ C, D o GH
+        "es_ine": "INSTITUTO NACIONAL ELECTORAL" in " ".join([t.upper() for t in textos_limpios]),  # 🇲🇽 Es INE (no IFE)
+        "nombre": nombre_completo,  # 👤 Nombre completo
+        "curp": curp_crudo,  # 🧬 CURP cruda
+        "clave_elector": clave_elector_crudo,  # 🔑 Clave de elector cruda
+        "fecha_nacimiento": buscar_en_lista(r'\b(\d{2}/\d{2}/\d{4})\b', textos_limpios),  # 📅 Fecha DD/MM/YYYY
+        "anio_registro": buscar_en_lista(r'(\d{4}\s\d+)', textos_limpios),  # 🗓️ Año registro + código
+        "seccion": buscar_seccion(textos_limpios),  # 📍 Sección electoral
+        "vigencia": vigencia_correcta,  # 📅 Período de vigencia
+        "sexo": buscar_en_lista(r'\b(H|M|X)\b', textos_limpios),  # 👫 Sexo
+        "pais": "Mex",  # 🇲🇽 País por defecto
     }
     
-    # 7. Extraer domicilio (usar textos_limpios)
+    # 🏠 8. EXTRACCIÓN DE DOMICILIO
     dom_index = None
     for i, line in enumerate(textos_limpios):
         if "DOMICILIO" in line.upper():
-            dom_index = i
+            dom_index = i  # 📍 Índice de "DOMICILIO"
             break
     
+    # 🏡 Asigna líneas después de "DOMICILIO" a campos de dirección
     if dom_index is not None:
-        campos["calle"] = textos_limpios[dom_index + 1] if len(textos_limpios) > dom_index + 1 else ""
-        campos["colonia"] = textos_limpios[dom_index + 2] if len(textos_limpios) > dom_index + 2 else ""
-        campos["estado"] = textos_limpios[dom_index + 3] if len(textos_limpios) > dom_index + 3 else ""
+        campos["calle"] = textos_limpios[dom_index + 1] if len(textos_limpios) > dom_index + 1 else ""  # 🛣️ Calle
+        campos["colonia"] = textos_limpios[dom_index + 2] if len(textos_limpios) > dom_index + 2 else ""  # 🏘️ Colonia
+        campos["estado"] = textos_limpios[dom_index + 3] if len(textos_limpios) > dom_index + 3 else ""  # 🏙️ Estado
     else:
         campos["calle"] = ""
         campos["colonia"] = ""
         campos["estado"] = ""
     
-    # Extraer número de calle
+    # 🔢 9. EXTRACCIÓN DE NÚMERO DE CALLE
+    # 🎯 Busca número con posibles sufijos como "INT. 1"
     match_num = re.search(r'\b(\d{1,5}[A-Z]?(?:\s*INT\.?\s*\d+)?)\b', campos["calle"])
-    campos["numero"] = match_num.group(1) if match_num else ""
+    campos["numero"] = match_num.group(1) if match_num else ""  # 🏷️ Número extraído
     
-    # Extraer código postal
-    campos["codigo_postal"] = buscar_en_lista(r'\b(\d{5})\b', [campos["colonia"], campos["estado"]])
+    # 📮 10. EXTRACCIÓN DE CÓDIGO POSTAL
+    campos["codigo_postal"] = buscar_en_lista(r'\b(\d{5})\b', [campos["colonia"], campos["estado"]])  # 🔢 5 dígitos
     
-    # 8. VALIDAR Y COMPLETAR DATOS FALTANTES
-    # Si falta sexo, tomarlo de la CURP
+    # ============================================================
+    # ✅ 11. VALIDACIÓN Y COMPLETADO DE DATOS FALTANTES
+    # ============================================================
+    
+    # 👫 Si falta sexo, tomarlo de la CURP
     if not campos["sexo"] and datos_curp["sexo"]:
         campos["sexo"] = datos_curp["sexo"]
     
-    # Si falta fecha de nacimiento, tomarlo de la CURP
+    # 📅 Si falta fecha de nacimiento, tomarlo de la CURP
     if not campos["fecha_nacimiento"] and datos_curp["fecha_nacimiento"]:
         campos["fecha_nacimiento"] = datos_curp["fecha_nacimiento"]
     
-    # Si falta sección, intentar desde clave de elector
+    # 📍 Si falta sección, intentar desde clave de elector
     if not campos["seccion"] and datos_clave["seccion_clave"]:
         campos["seccion"] = datos_clave["seccion_clave"]
     
-    # Si falta año de registro, intentar desde clave de elector
+    # 🗓️ Si falta año de registro, intentar desde clave de elector
     if not campos["anio_registro"] and datos_clave["anio_registro_clave"]:
-        campos["anio_registro"] = datos_clave["anio_registro_clave"] + " 00"
+        campos["anio_registro"] = datos_clave["anio_registro_clave"] + " 00"  # 🔢 Agrega "00" como código
     
-    # Si no hay estado del domicilio, usar el de la CURP
+    # 🏙️ Si no hay estado del domicilio, usar el de la CURP o Clave
     if not campos["estado"] or len(campos["estado"].strip()) < 5:
         if datos_curp["estado"]:
-            campos["estado"] = datos_curp["estado"]
+            campos["estado"] = datos_curp["estado"]  # 🗺️ Estado desde CURP
         elif datos_clave["estado_clave"]:
-            campos["estado"] = datos_clave["estado_clave"]
+            campos["estado"] = datos_clave["estado_clave"]  # 🗺️ Estado desde Clave
     
-    # 9. Formatear año de registro si es necesario
+    # 🔢 12. FORMATEAR AÑO DE REGISTRO (agregar " 00" si falta)
     if campos["anio_registro"] and " " not in campos["anio_registro"]:
         campos["anio_registro"] = campos["anio_registro"] + " 00"
     
-    # 10. Si no se encontró vigencia con la función específica, usar la búsqueda original
+    # 📅 13. FALLBACK PARA VIGENCIA (si la función específica no encontró)
     if not campos["vigencia"]:
         vigencia_original = buscar_en_lista(r'(\d{4}\s*[-]?\s*?\d{4})', textos_limpios)
         if vigencia_original:
-            campos["vigencia"] = vigencia_original
+            campos["vigencia"] = vigencia_original  # 🔄 Usa búsqueda original
     
-    # 11. Limpiar formato de vigencia
+    # 🧼 14. LIMPIAR FORMATO DE VIGENCIA
     if campos["vigencia"]:
         campos["vigencia"] = re.sub(r'\s+', ' ', campos["vigencia"].replace('-', ' - ').strip())
     
-    return campos
+    return campos  # 📦 Retorna todos los campos procesados
+
 
 # ============================================================
 # 🧩 FUNCIÓN AUXILIAR: BUSCAR EN LISTA MEJORADA
 # ============================================================
 def buscar_en_lista(pattern: str, lista: List[str]) -> str:
-    """🔍 Busca regex en lista - MEJORADA para evitar falsos positivos."""
+    """🔍 Busca un patrón regex en una lista de textos.
+    
+    🎯 Mejorada con validaciones específicas:
+    - 📅 Para fechas: valida que sea fecha plausible
+    - 📆 Para vigencias: valida que sean años plausibles
+    - 🔍 Para otros: retorna primera coincidencia
+    
+    Args:
+        pattern (str): Patrón regex a buscar
+        lista (List[str]): Lista de textos donde buscar
+        
+    Returns:
+        str: Texto encontrado o cadena vacía
+    """
     for line in lista:
-        # Para patrones de fecha (dd/mm/yyyy), verificar que sea fecha válida
+        # 📅 VALIDACIÓN ESPECIAL PARA FECHAS (DD/MM/YYYY)
         if '\\d{2}/\\d{2}/\\d{4}' in pattern:
             match = re.search(pattern, line)
             if match:
                 fecha = match.group(1)
-                # Validar que sea fecha plausible
+                # ✅ Valida que sea fecha plausible
                 try:
                     dia, mes, anio = map(int, fecha.split('/'))
+                    # 🕰️ Rango válido: día 1-31, mes 1-12, año 1900-actual
                     if 1 <= dia <= 31 and 1 <= mes <= 12 and 1900 <= anio <= datetime.now().year:
-                        return fecha
+                        return fecha  # ✅ Fecha válida
                 except:
-                    continue
-        # Para patrones de vigencia (año - año)
+                    continue  # 🚫 Error en conversión, sigue buscando
+        # 📆 VALIDACIÓN ESPECIAL PARA VIGENCIAS (AAAA-AAAA)
         elif '\\d{4}\\s*[-]' in pattern:
             match = re.search(pattern, line)
             if match:
                 vigencia = match.group(1)
-                # Validar que sean años plausibles
+                # ✅ Valida que sean años plausibles
                 años = re.findall(r'\d{4}', vigencia)
                 if len(años) == 2:
                     año1, año2 = int(años[0]), int(años[1])
+                    # 🕰️ Rango válido: 1900-2099 y año2 > año1
                     if 1900 <= año1 <= 2099 and 1900 <= año2 <= 2099 and año2 > año1:
-                        return vigencia
+                        return vigencia  # ✅ Vigencia válida
         else:
-            # Para otros patrones
+            # 🔍 BÚSQUEDA GENERAL PARA OTROS PATRONES
             match = re.search(pattern, line)
             if match:
-                return match.group(1)
+                return match.group(1)  # ✅ Coincidencia encontrada
     
-    return ""
+    return ""  # 🚫 No se encontró coincidencia
+
+
 # ============================================================
 # 🧩 FUNCIONES AUXILIARES
 # ============================================================
 def normalizar_textos(texts: List[str]) -> List[str]:
-    """🧼 Normaliza líneas OCR."""
+    """🧼 Normaliza una lista de textos OCR.
+    
+    🎯 Acciones:
+    - Elimina espacios múltiples
+    - Elimina espacios al inicio/fin
+    - Filtra líneas vacías
+    
+    Args:
+        texts (List[str]): Lista de textos crudos
+        
+    Returns:
+        List[str]: Lista de textos normalizados
+    """
     limpios: List[str] = []
     for t in texts:
-        t2 = re.sub(r'\s+', ' ', (t or '').strip())
-        if t2:
+        t2 = re.sub(r'\s+', ' ', (t or '').strip())  # 🧼 Reemplaza múltiples espacios
+        if t2:  # ✅ Solo agrega si no está vacío
             limpios.append(t2)
     return limpios
 
 
-
-
-
 def buscar_seccion(lista: List[str]) -> str:
-    """📍 Busca sección electoral."""
+    """📍 Busca sección electoral en una lista de textos.
+    
+    🎯 La sección electoral son exactamente 4 dígitos
+    
+    Args:
+        lista (List[str]): Lista de textos donde buscar
+        
+    Returns:
+        str: Sección encontrada o cadena vacía
+    """
     for line in lista:
-        if re.fullmatch(r'\d{4}', line.strip()):
+        if re.fullmatch(r'\d{4}', line.strip()):  # 🔢 Exactamente 4 dígitos
             return line.strip()
-    return ""
+    return ""  # 🚫 No se encontró sección
 
 
 # ============================================================
 # 🧨 WORKER OCR CON TIMEOUT
 # ============================================================
 def _ocr_worker(img_bgr: np.ndarray, out_q: mp.Queue) -> None:
-    """🏗️ Worker para OCR en proceso separado."""
+    """🏗️ Worker que ejecuta OCR en un proceso separado.
+    
+    🎯 Propósito: Aislar el OCR en otro proceso para poder
+    matarlo si excede el timeout
+    
+    Args:
+        img_bgr (np.ndarray): Imagen en formato BGR (OpenCV)
+        out_q (mp.Queue): Cola para devolver resultados
+    """
     try:
-        engine = _build_ocr_engine()
-        result = engine.predict(img_bgr)
-        texts = result[0]["rec_texts"] if result else []
-        out_q.put({"ok": True, "texts": texts})
+        engine = _build_ocr_engine()  # 🚀 Crea motor OCR
+        result = engine.predict(img_bgr)  # 🔍 Ejecuta OCR
+        texts = result[0]["rec_texts"] if result else []  # 📝 Extrae textos
+        out_q.put({"ok": True, "texts": texts})  # 📤 Devuelve éxito
     except Exception as e:
-        out_q.put({"ok": False, "error": str(e)})
+        out_q.put({"ok": False, "error": str(e)})  # 📤 Devuelve error
 
 
 def predict_ocr_texts_with_timeout_kill(img_bgr: np.ndarray, timeout_seconds: int) -> List[str]:
-    """⏱️ OCR con timeout y kill de proceso."""
-    out_q: mp.Queue = mp.Queue(maxsize=1)
+    """⏱️ Ejecuta OCR con timeout y kill de proceso.
+    
+    🎯 Estrategia:
+    1. 🏗️ Crea proceso hijo para OCR
+    2. ⏰ Espera timeout_seconds
+    3. 💀 Si sigue vivo, lo termina
+    4. 📦 Recupera resultados de la cola
+    
+    Args:
+        img_bgr (np.ndarray): Imagen en formato BGR
+        timeout_seconds (int): Segundos máximos de espera
+        
+    Returns:
+        List[str]: Lista de textos extraídos
+        
+    Raises:
+        TimeoutError: Si el OCR excede el timeout
+        RuntimeError: Si hay error en el OCR
+    """
+    out_q: mp.Queue = mp.Queue(maxsize=1)  # 📦 Cola para comunicación
+    # 🏗️ Crea proceso hijo con el worker OCR
     p = mp.Process(target=_ocr_worker, args=(img_bgr, out_q), daemon=True)
     
-    p.start()
-    p.join(timeout_seconds)
+    p.start()  # 🚀 Inicia proceso
+    p.join(timeout_seconds)  # ⏰ Espera con timeout
     
+    # 💀 TERMINAR PROCESO SI SIGUE VIVO (TIMEOUT)
     if p.is_alive():
         try:
-            p.terminate()
+            p.terminate()  # 🔴 Termina proceso
         finally:
-            p.join(timeout=2)
+            p.join(timeout=2)  # ⏳ Espera terminación
         raise TimeoutError("OCR tardó demasiado (proceso terminado)")
     
+    # 📦 RECUPERAR RESULTADOS DE LA COLA
     try:
-        payload = out_q.get_nowait()
+        payload = out_q.get_nowait()  # 📥 Obtiene resultado sin esperar
     except queue.Empty:
         raise RuntimeError("OCR terminó pero no devolvió resultado")
     
+    # ❌ MANEJO DE ERRORES DEL WORKER
     if not payload.get("ok"):
         raise RuntimeError(payload.get("error", "Error desconocido en OCR"))
     
-    return payload.get("texts") or []
+    return payload.get("texts") or []  # ✅ Retorna textos extraídos
 
 
 # ============================================================
-# 🖼️ FUNCIONES DE IMAGEN
+# 🖼️ FUNCIONES DE MANEJO DE IMÁGENES
 # ============================================================
 def leer_imagen_desde_request(field_name: str = "imagen") -> Optional[np.ndarray]:
-    """🖼️ Lee imagen del request."""
+    """🖼️ Lee y decodifica una imagen desde un request HTTP multipart.
+    
+    🎯 Proceso:
+    1. 📥 Obtiene archivo del request
+    2. 🔢 Lee bytes del archivo
+    3. 🖼️ Decodifica a matriz OpenCV
+    
+    Args:
+        field_name (str): Nombre del campo en el formulario (default: "imagen")
+        
+    Returns:
+        Optional[np.ndarray]: Imagen en formato BGR o None si hay error
+    """
     if field_name not in request.files:
-        return None
+        return None  # 🚫 No hay archivo en el request
     
-    file = request.files[field_name]
-    data = file.read()
+    file = request.files[field_name]  # 📂 Obtiene archivo
+    data = file.read()  # 🔢 Lee bytes
     if not data:
-        return None
+        return None  # 🚫 Archivo vacío
     
-    npimg = np.frombuffer(data, np.uint8)
-    return cv2.imdecode(npimg, cv2.IMREAD_COLOR)
+    npimg = np.frombuffer(data, np.uint8)  # 🔢 Convierte bytes a numpy array
+    return cv2.imdecode(npimg, cv2.IMREAD_COLOR)  # 🖼️ Decodifica a imagen BGR
 
 
 # ============================================================
-# 🚀 ENDPOINT OCR MEJORADO
+# 🚀 ENDPOINT PRINCIPAL OCR MEJORADO
 # ============================================================
 @app.route("/ocr", methods=["POST"])
 def ocr_anverso_mejorado():
     """
-    🪪 OCR ANVERSO MEJORADO ⭐
+    🪪 ENDPOINT PRINCIPAL: OCR ANVERSO MEJORADO ⭐
     ---
     tags:
       - INE OCR Mejorado
@@ -801,53 +1025,68 @@ def ocr_anverso_mejorado():
         in: formData
         type: file
         required: true
-        description: 📸 Imagen del anverso de la credencial
+        description: 📸 Imagen del anverso de la credencial INE/IFE
     responses:
       200:
         description: ✅ Datos extraídos con validación desde CURP/Clave
       400:
         description: ❌ Falta imagen o imagen inválida
       408:
-        description: ⏱️ OCR tardó demasiado
+        description: ⏱️ OCR tardó demasiado (timeout)
     """
+    # 🖼️ 1. LEER IMAGEN DEL REQUEST
     img = leer_imagen_desde_request("imagen")
     if img is None:
         return jsonify({"error": "❌ No se envió la imagen o está vacía"}), 400
     
     try:
+        # 🔍 2. EJECUTAR OCR CON TIMEOUT
         texts = predict_ocr_texts_with_timeout_kill(img, OCR_TIMEOUT_SECONDS)
     except TimeoutError:
-        return jsonify({"error": "❌ La imagen es poco clara"}), 408
+        return jsonify({"error": "❌ La imagen es poco clara"}), 408  # ⏱️ Timeout
     except Exception as e:
-        return jsonify({"error": f"❌ Error procesando OCR: {str(e)}"}), 400
+        return jsonify({"error": f"❌ Error procesando OCR: {str(e)}"}), 400  # ❌ Error general
     
-    # Extraer datos con validación mejorada
+    # 🪪 3. EXTRAER DATOS CON VALIDACIÓN MEJORADA
     datos = extraer_campos_ine_mejorado(texts)
     
-    # Incluir textos OCR en modo debug
+    # 🔧 4. MODO DEBUG (opcional)
     if (request.args.get("debug") or "").strip() in ("1", "true", "True", "yes", "YES"):
-        datos["_ocr_texts"] = normalizar_textos(texts)
-        datos["_tipo_detectado"] = datos.get("tipo_credencial", "DESCONOCIDO")
+        datos["_ocr_texts"] = normalizar_textos(texts)  # 📝 Textos OCR originales
+        datos["_tipo_detectado"] = datos.get("tipo_credencial", "DESCONOCIDO")  # 🏷️ Tipo detectado
     
-    return jsonify(datos)
+    return jsonify(datos)  # 📦 Retorna datos en JSON
 
 
 # ============================================================
-# 🩺 HEALTH CHECK
+# 🩺 ENDPOINT HEALTH CHECK
 # ============================================================
 @app.route("/health", methods=["GET"])
 def health_check():
-    """🩺 Health Check."""
+    """🩺 Endpoint para verificar el estado del servicio.
+    
+    🎯 Uso típico:
+    - Monitoreo de salud del servicio
+    - Verificación de disponibilidad
+    - Balanceadores de carga
+    
+    Returns:
+        JSON con estado del servicio y características
+    """
     return jsonify({
-        "status": "✅ OK", 
-        "service": "INE OCR API MEJORADO", 
-        "version": "2.0.0",
-        "features": ["Clasificación C/D/GH", "Validación CURP/Clave", "Extracción mejorada"]
+        "status": "✅ OK",  # 🟢 Estado del servicio
+        "service": "INE OCR API MEJORADO",  # 🏷️ Nombre del servicio
+        "version": "2.0.0",  # 🔢 Versión de la API
+        "features": ["Clasificación C/D/GH", "Validación CURP/Clave", "Extracción mejorada"]  # ✨ Características
     })
 
 
 # ============================================================
-# ▶️ RUN
+# ▶️ PUNTO DE INICIO DE LA APLICACIÓN
 # ============================================================
 if __name__ == "__main__":
+    # 🚀 Inicia el servidor Flask
     app.run(host="0.0.0.0", port=5001, debug=False)
+    # 🌐 host="0.0.0.0": Escucha en todas las interfaces
+    # 🔢 port=5001: Puerto del servicio
+    # 🐛 debug=False: Modo producción (sin debug)
