@@ -139,25 +139,57 @@ def _build_ocr_engine() -> PaddleOCR:
 # ============================================================
 def clasificar_tipo_credencial(textos_limpios: List[str]) -> str:
     """
-    🪪 Clasifica el tipo de credencial INE.
+    🪪 Clasifica el tipo de credencial: C (IFE), D, GH.
 
-    ✅ FIX:
-    - Antes: dependías de "CLAVE DE ELECTOR" exacto (OCR falla con espacios/pegado)
-    - Ahora: detecta de forma flexible:
-        - CLAVE\s*DE\s*ELECTOR
-        - o que aparezcan CLAVE y ELECTOR en el texto
-        - o que el patrón de "CLAVE DE ELECTOR" venga incompleto pero cercano
+    ✅ FIX IMPORTANTE:
+    - El tipo C (IFE) también contiene "INSTITUTO" y "ELECTORAL" y "CREDENCIAL PARA VOTAR"
+      y además trae "CLAVE DE ELECTOR", por eso se estaba yendo a GH.
+    - Ahora detectamos explícitamente IFE/REGISTRO FEDERAL DE ELECTORES (C) ANTES que GH.
+
+    Reglas:
+    - Si detecta IFE / REGISTRO FEDERAL DE ELECTORES / INSTITUTO FEDERAL ELECTORAL => "C"
+    - Si detecta INE + CREDENCIAL PARA VOTAR + CLAVE DE ELECTOR => "GH"
+    - Si detecta INE + CREDENCIAL PARA VOTAR => "D"
+    - Default => "D"
     """
 
     # Unificar a un solo texto para búsqueda flexible
     texto_completo = " ".join([t.upper().strip() for t in textos_limpios if t]).strip()
 
-    # Detectores base INE
-    tiene_ine = "INSTITUTO" in texto_completo and "ELECTORAL" in texto_completo
+    # ============================================================
+    # ✅ 1) DETECTOR TIPO C (IFE)
+    # ============================================================
+    # Muchos IFE traen:
+    # - "INSTITUTO FEDERAL ELECTORAL"
+    # - "REGISTRO FEDERAL DE ELECTORES"
+    # - y/o se menciona "IFE"
+    es_ife = (
+        "INSTITUTO FEDERAL ELECTORAL" in texto_completo
+        or "REGISTRO FEDERAL DE ELECTORES" in texto_completo
+        or re.search(r"\bIFE\b", texto_completo) is not None
+        or ("FEDERAL" in texto_completo and "ELECTORAL" in texto_completo and "REGISTRO" in texto_completo)
+    )
+
+    if es_ife:
+        return "C"
+
+    # ============================================================
+    # ✅ 2) DETECTORES BASE INE
+    # ============================================================
+    # OJO: antes "INSTITUTO"+"ELECTORAL" también matcheaba IFE.
+    # Ya lo filtramos arriba, aquí ya asumimos INE cuando aplique.
+    tiene_ine = (
+        ("INSTITUTO" in texto_completo and "ELECTORAL" in texto_completo)
+        and ("NACIONAL" in texto_completo or re.search(r"\bINE\b", texto_completo) is not None)
+    )
+
     tiene_credencial_para_votar = "CREDENCIAL" in texto_completo and "VOTAR" in texto_completo
 
     # Heurísticas que suelen aparecer en anverso INE
-    tiene_curp = "CURP" in texto_completo or re.search(r'\b[A-Z]{4}\d{6}[HMX][A-Z]{5,6}[0-9A-Z]\b', texto_completo) is not None
+    tiene_curp = (
+        "CURP" in texto_completo
+        or re.search(r'\b[A-Z]{4}\d{6}[HMX][A-Z]{5,6}[0-9A-Z]\b', texto_completo) is not None
+    )
 
     # ✅ "CLAVE DE ELECTOR" flexible (OCR puede pegar o meter espacios raros)
     tiene_clave_elector_flexible = (
@@ -166,18 +198,19 @@ def clasificar_tipo_credencial(textos_limpios: List[str]) -> str:
         or re.search(r'CLAVE\s*DE\s*ELEC', texto_completo) is not None
     )
 
-    # ✅ GH suele tener formato organizado y casi siempre tiene CURP + clave elector
-    # Si hay INE + credencial para votar + (clave elector flexible), es GH
+    # ============================================================
+    # ✅ 3) CLASIFICACIÓN INE (GH / D)
+    # ============================================================
+    # GH suele tener INE + credencial para votar + clave elector (flexible).
     if tiene_ine and tiene_credencial_para_votar and tiene_clave_elector_flexible:
         return "GH"
 
-    # Si es INE pero no detectamos la clave elector, lo dejamos como D (tu compatibilidad actual)
+    # Si es INE pero no detectamos la clave elector, lo dejamos como D
     if tiene_ine and tiene_credencial_para_votar:
         return "D"
 
-    # Si no es claramente INE, devolvemos "D" por default (no romper tu pipeline)
+    # Default (no romper pipeline)
     return "D"
-
 
 
 # ============================================================
@@ -329,24 +362,23 @@ def extraer_nombre_mejorado(texts: List[str], tipo_credencial: str) -> str:
     👤 Extrae el nombre completo desde los textos OCR.
 
     ✅ FIX:
-    - En GH el nombre puede venir en 2-3 líneas separadas:
-        NOMBRE
-        CASTILLO
-        OLIVERA
-        RICARDO ORLANDO
-    - Si OCR no detecta "NOMBRE", usamos ANCLA "DOMICILIO" y tomamos líneas antes.
-    - Evita falsos positivos como "INSTITUTO NACIONAL ELECTORAL".
+    - En IFE tipo C aparece "EDAD" y "SEXO" cerca del nombre; OCR a veces los pega en la misma línea.
+      Ejemplo malo: "BLANCO EDAD BARRADAS JESUS ALEXIS"
+      Ejemplo bueno: "BLANCO BARRADAS JESUS ALEXIS"
+    - Se agrega EDAD como stop label + se limpia SIEMPRE con limpiar_y_validar_nombre().
+
+    ✅ Compatible con GH/D también (no rompe lo que ya funcionaba).
     """
     textos_limpios = normalizar_textos(texts)
 
     # 🚫 Palabras que NO deben considerarse como parte del nombre
     blacklist_regex = r'(INSTITUTO|NACIONAL|ELECTORAL|CREDENCIAL|PARA\s+VOTAR|M[EÉ]XICO|ESTADOS\s+UNIDOS)'
-    stop_labels_regex = r'(DOMICILIO|CLAVE|CURP|FECHA|SECCI[ÓO]N|AÑO|REGISTRO|VIGENCIA|SEXO)'
+    # 👇 FIX: agregar EDAD aquí
+    stop_labels_regex = r'(DOMICILIO|CLAVE|CURP|FECHA|SECCI[ÓO]N|AÑO|REGISTRO|VIGENCIA|SEXO|EDAD)'
 
     # ============================================================
     # ✅ ESTRATEGIA 0 (UNIVERSAL): ANCLA POR "DOMICILIO"
-    # - Funciona MUY bien en INE GH (y en general)
-    # - Toma 2-4 líneas antes de DOMICILIO como nombre
+    # - Funciona muy bien en GH/D y también en C si existe DOMICILIO
     # ============================================================
     idx_dom = None
     for i, line in enumerate(textos_limpios):
@@ -381,6 +413,8 @@ def extraer_nombre_mejorado(texts: List[str], tipo_credencial: str) -> str:
         # Devolver las últimas 2-4 líneas como nombre completo
         if candidatos:
             nombre_candidato = " ".join(candidatos[-4:]).strip()
+            nombre_candidato = limpiar_y_validar_nombre(nombre_candidato).strip()
+
             if len(nombre_candidato.split()) >= 2:
                 return nombre_candidato
 
@@ -412,6 +446,8 @@ def extraer_nombre_mejorado(texts: List[str], tipo_credencial: str) -> str:
                     partes.append(s)
 
                 nombre_candidato = " ".join(partes).strip()
+                nombre_candidato = limpiar_y_validar_nombre(nombre_candidato).strip()
+
                 if len(nombre_candidato.split()) >= 2:
                     return nombre_candidato
 
@@ -421,16 +457,19 @@ def extraer_nombre_mejorado(texts: List[str], tipo_credencial: str) -> str:
             m = re.search(r'NOMBRE\s*[:\-]?\s*([A-ZÁÉÍÓÚÜÑ\s\.]{3,})', up)
             if m:
                 nombre_candidato = m.group(1).strip()
-                nc_up = nombre_candidato.upper()
+                nombre_candidato = limpiar_y_validar_nombre(nombre_candidato).strip()
 
-                if (len(nombre_candidato.split()) >= 2 and
-                    not re.search(stop_labels_regex, nc_up) and
-                    not re.search(blacklist_regex, nc_up) and
-                    not any(ch.isdigit() for ch in nc_up)):
+                nc_up = nombre_candidato.upper()
+                if (
+                    len(nombre_candidato.split()) >= 2
+                    and not re.search(stop_labels_regex, nc_up)
+                    and not re.search(blacklist_regex, nc_up)
+                    and not any(ch.isdigit() for ch in nc_up)
+                ):
                     return nombre_candidato
 
     # ============================================================
-    # 🧠 FALLBACK GENERAL (para otros tipos o casos raros)
+    # 🧠 FALLBACK GENERAL (para C u otros casos raros)
     # ============================================================
     candidatos = []
     for line in textos_limpios:
@@ -445,7 +484,10 @@ def extraer_nombre_mejorado(texts: List[str], tipo_credencial: str) -> str:
             continue
         if any(ch.isdigit() for ch in up):
             continue
-        candidatos.append(line.strip())
+
+        candidato = limpiar_y_validar_nombre(line.strip()).strip()
+        if len(candidato.split()) >= 2:
+            candidatos.append(candidato)
 
     if candidatos:
         return candidatos[0]
