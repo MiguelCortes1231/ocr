@@ -272,12 +272,15 @@ def limpiar_y_validar_nombre(nombre: str) -> str:
         return ""
     
     # Palabras que NO deberían estar en un nombre
+
+    
     palabras_invalidas = [
-        'EDAD', 'AÑOS', 'AÑO', 'EDAD:', 'EDADES', 'FECHA', 'NACIMIENTO',
-        'DOMICILIO', 'CALLE', 'COLONIA', 'ESTADO', 'MUNICIPIO', 'CIUDAD',
-        'CP', 'C.P.', 'CÓDIGO', 'POSTAL', 'SECCIÓN', 'SECCION', 'CLAVE',
-        'ELECTOR', 'CURP', 'VIGENCIA', 'VIGENTE', 'INSTITUTO', 'NACIONAL',
-        'FEDERAL', 'ELECTORAL', 'CREDENCIAL', 'VOTAR', 'PARA', 'MÉXICO'
+    'EDAD', 'AÑOS', 'AÑO', 'EDAD:', 'EDADES', 'FECHA', 'NACIMIENTO',
+    'DOMICILIO', 'CALLE', 'COLONIA', 'ESTADO', 'MUNICIPIO', 'CIUDAD',
+    'CP', 'C.P.', 'CÓDIGO', 'POSTAL', 'SECCIÓN', 'SECCION', 'CLAVE',
+    'ELECTOR', 'CURP', 'VIGENCIA', 'VIGENTE', 'INSTITUTO', 'NACIONAL',
+    'FEDERAL', 'ELECTORAL', 'CREDENCIAL', 'VOTAR', 'PARA', 'MÉXICO',
+    'REGISTRO'  # ✅ evita "DE REGISTRO"
     ]
     
     # Convertir a mayúsculas para comparación
@@ -313,84 +316,162 @@ def limpiar_y_validar_nombre(nombre: str) -> str:
 def extraer_nombre_mejorado(texts: List[str], tipo_credencial: str) -> str:
     """
     👤 Extrae y limpia el nombre según el tipo de credencial.
-    CORREGIDO: Manejo específico para tipo GM.
+
+    ✅ CORREGIDO para tipo GM:
+    - En GM el nombre viene en 2 o 3 líneas separadas después de "NOMBRE"
+      Ejemplo real:
+        NOMBRE
+        MIRANDA
+        MARTINEZ
+        EMILIO
+    - Antes tu código solo tomaba UNA línea y pedía >= 2 palabras.
+      Por eso fallaba y caía al fallback que terminaba en "DE REGISTRO".
     """
     textos_limpios = normalizar_textos(texts)
-    
-    # Estrategias específicas por tipo de credencial
+
+    # ============================================================
+    # 🪪 ESTRATEGIA 1: GM (MÁS ESTRICTO Y CORRECTO)
+    # ============================================================
     if tipo_credencial == "GM":
-        # GM tiene estructura muy clara: "NOMBRE" en una línea, nombre en la siguiente
+
+        # ------------------------------------------------------------
+        # ✅ Caso A: "NOMBRE" en línea sola y el nombre viene abajo en varias líneas
+        # ------------------------------------------------------------
         for i, line in enumerate(textos_limpios):
+            line_upper = line.upper().strip()
+
+            # Buscar línea que sea EXACTAMENTE "NOMBRE"
+            if re.fullmatch(r'^NOMBRE\s*$', line_upper):
+
+                partes: List[str] = []
+
+                # Tomar hasta 4-5 líneas siguientes, concatenando mientras no topemos etiquetas
+                for j in range(i + 1, min(i + 6, len(textos_limpios))):
+                    s = textos_limpios[j].strip()
+                    s_up = s.upper().strip()
+
+                    # Si encontramos otra etiqueta, paramos
+                    if re.search(r'(DOMICILIO|CLAVE|CURP|FECHA|SECCI[ÓO]N|AÑO|VIGENCIA|SEXO)', s_up):
+                        break
+
+                    # Ignorar líneas vacías o basura
+                    if not s:
+                        continue
+
+                    # Ignorar líneas con números (normalmente no son nombre)
+                    if any(ch.isdigit() for ch in s_up):
+                        continue
+
+                    # Ignorar si la línea es muy corta (ruido)
+                    if len(s_up) <= 1:
+                        continue
+
+                    partes.append(s)
+
+                nombre_candidato = " ".join(partes).strip()
+
+                # Si ya armamos mínimo 2 palabras, lo devolvemos
+                if len(nombre_candidato.split()) >= 2:
+                    return nombre_candidato
+
+        # ------------------------------------------------------------
+        # ✅ Caso B: "NOMBRE: JUAN PEREZ ..." en misma línea (algunas fotos lo traen así)
+        # ------------------------------------------------------------
+        for line in textos_limpios:
             line_upper = line.upper()
-            
-            # Buscar línea que contenga exactamente "NOMBRE" (sin otras palabras)
-            if re.fullmatch(r'^NOMBRE\s*$', line_upper.strip()):
-                # Tomar la siguiente línea como nombre
-                if i + 1 < len(textos_limpios):
-                    nombre_candidato = textos_limpios[i + 1].strip()
-                    # Verificar que no sea otra etiqueta
-                    if (nombre_candidato and 
-                        not re.search(r'(DOMICILIO|CLAVE|CURP|FECHA|SECCI[ÓO]N|AÑO|VIGENCIA|SEXO)', nombre_candidato.upper()) and
-                        len(nombre_candidato.split()) >= 2):
-                        return nombre_candidato
-            
-            # También buscar patrón "NOMBRE" seguido del nombre en misma línea
             match = re.search(r'NOMBRE\s*[:\-]?\s*([A-ZÁÉÍÓÚÜÑ\s\.]{5,})', line_upper)
             if match:
                 nombre_candidato = match.group(1).strip()
-                if len(nombre_candidato.split()) >= 2:
+                if (nombre_candidato and
+                    not re.search(r'(DOMICILIO|CLAVE|CURP|FECHA|SECCI[ÓO]N|AÑO|VIGENCIA|SEXO)', nombre_candidato.upper()) and
+                    len(nombre_candidato.split()) >= 2):
                     return nombre_candidato
-        
-        # Si no se encontró con patrones anteriores, buscar después de "NOMBRE"
+
+        # ------------------------------------------------------------
+        # ✅ Caso C: Si la palabra "NOMBRE" viene mezclada con otras cosas,
+        # buscamos en las siguientes líneas hasta topar etiqueta
+        # ------------------------------------------------------------
         for i, line in enumerate(textos_limpios):
             if "NOMBRE" in line.upper():
-                # Buscar en líneas siguientes hasta encontrar otra etiqueta
-                for j in range(i + 1, min(i + 4, len(textos_limpios))):
-                    siguiente_linea = textos_limpios[j].strip()
-                    # Si encontramos otra etiqueta, paramos
-                    if re.search(r'(DOMICILIO|CLAVE|CURP|FECHA|SECCI[ÓO]N|AÑO|VIGENCIA)', siguiente_linea.upper()):
+
+                partes: List[str] = []
+
+                for j in range(i + 1, min(i + 6, len(textos_limpios))):
+                    siguiente = textos_limpios[j].strip()
+                    siguiente_up = siguiente.upper().strip()
+
+                    if re.search(r'(DOMICILIO|CLAVE|CURP|FECHA|SECCI[ÓO]N|AÑO|VIGENCIA|SEXO)', siguiente_up):
                         break
-                    # Si es un nombre válido
-                    if (siguiente_linea and 
-                        len(siguiente_linea.split()) >= 2 and
-                        not re.search(r'\b(SEXO|H|M|X)\b', siguiente_linea.upper())):
-                        return siguiente_linea
-    
-    # Para tipos C y D, usar búsqueda más amplia
+
+                    if not siguiente:
+                        continue
+
+                    if any(ch.isdigit() for ch in siguiente_up):
+                        continue
+
+                    if len(siguiente_up) <= 1:
+                        continue
+
+                    partes.append(siguiente)
+
+                nombre_candidato = " ".join(partes).strip()
+                if len(nombre_candidato.split()) >= 2:
+                    return nombre_candidato
+
+        # Si GM falló, seguimos con el fallback general
+        # (pero normalmente ya con esto GM queda perfecto)
+
+    # ============================================================
+    # 🧠 ESTRATEGIA 2: TIPOS C / D (BÚSQUEDA MÁS GENERAL)
+    # ============================================================
     patrones_nombre = [
         r'NOMBRE[:\s\-]*([A-ZÁÉÍÓÚÜÑ\s\.]{5,})',
-        r'^([A-ZÁÉÍÓÚÜÑ]{2,}\s+[A-ZÁÉÍÓÚÜÑ]{2,}\s+[A-ZÁÉÍÓÚÜÑ]{2,})$',
-        r'^([A-ZÁÉÍÓÚÜÑ]{2,}\s+[A-ZÁÉÍÓÚÜÑ]{2,})$'
+        r'^([A-ZÁÉÍÓÚÜÑ]{2,}\s+[A-ZÁÉÍÓÚÜÑ]{2,}(?:\s+[A-ZÁÉÍÓÚÜÑ]{2,}){0,3})$'
     ]
-    
+
     for patron in patrones_nombre:
         for line in textos_limpios:
             match = re.search(patron, line.upper())
             if match:
-                nombre_crudo = match.group(1) if match.groups() else line
-                nombre_limpio = limpiar_y_validar_nombre(nombre_crudo)
-                if nombre_limpio and len(nombre_limpio.split()) >= 2:
-                    return nombre_limpio
-    
-    # Buscar líneas que parezcan nombre (2-5 palabras, todas mayúsculas, sin números)
-    palabras_invalidas = ['EDAD', 'SEXO', 'DOMICILIO', 'CLAVE', 'CURP', 'FECHA', 'SECCIÓN', 'VIGENCIA']
-    for line in textos_limpios:
-        line_upper = line.upper()
-        palabras = line_upper.split()
-        
-        # Verificar si parece un nombre
-        if (2 <= len(palabras) <= 5 and
-            all(len(p) > 1 for p in palabras) and
-            not any(p in palabras_invalidas for p in palabras) and
-            not any(char.isdigit() for char in line_upper) and
-            all(p.isalpha() or any(c in 'ÁÉÍÓÚÜÑ' for c in p) for p in palabras)):
-            
-            nombre_limpio = limpiar_y_validar_nombre(line)
-            if nombre_limpio:
-                return nombre_limpio
-    
-    return ""
+                nombre = match.group(1).strip() if match.groups() else match.group(0).strip()
 
+                # Validación: que no sea etiqueta
+                if (nombre and
+                    len(nombre.split()) >= 2 and
+                    not re.search(r'(DOMICILIO|CLAVE|CURP|FECHA|SECCI[ÓO]N|AÑO|VIGENCIA|SEXO)', nombre.upper())):
+                    return nombre
+
+    # ============================================================
+    # 🧨 ESTRATEGIA 3: FALLBACK (ÚLTIMO RECURSO)
+    # ============================================================
+    # Buscar líneas que parecen nombres (mayúsculas, 2+ palabras, sin etiquetas)
+    candidatos = []
+    for line in textos_limpios:
+        line_upper = line.upper().strip()
+
+        if not line_upper:
+            continue
+
+        # Debe tener mínimo 2 palabras
+        if len(line_upper.split()) < 2:
+            continue
+
+        # No debe contener etiquetas típicas
+        if re.search(r'(DOMICILIO|CLAVE|CURP|FECHA|SECCI[ÓO]N|AÑO|REGISTRO|VIGENCIA|SEXO)', line_upper):
+            continue
+
+        # No debe contener números
+        if any(ch.isdigit() for ch in line_upper):
+            continue
+
+        # Si pasa filtros, lo guardamos
+        candidatos.append(line)
+
+    # Si hay candidatos, devolver el primero
+    if candidatos:
+        return candidatos[0].strip()
+
+    return ""
 
 # ============================================================
 # 📅 CORRECCIÓN: EXTRACCIÓN DE VIGENCIA
