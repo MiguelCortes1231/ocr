@@ -3,7 +3,7 @@
 =================================================
 
 ✅ MEJORAS IMPLEMENTADAS:
-1. Clasificación automática de tipo de credencial (C, D, GM)
+1. Clasificación automática de tipo de credencial (C, D, GH)
 2. Validación y completado de datos desde CURP y Clave de Elector
 3. Mejora en extracción de nombre (filtra palabras erróneas)
 4. Reglas específicas por tipo de credencial
@@ -166,10 +166,10 @@ def clasificar_tipo_credencial(textos_limpios: List[str]) -> str:
         or re.search(r'CLAVE\s*DE\s*ELEC', texto_completo) is not None
     )
 
-    # ✅ GM suele tener formato organizado y casi siempre tiene CURP + clave elector
-    # Si hay INE + credencial para votar + (clave elector flexible), es GM
+    # ✅ GH suele tener formato organizado y casi siempre tiene CURP + clave elector
+    # Si hay INE + credencial para votar + (clave elector flexible), es GH
     if tiene_ine and tiene_credencial_para_votar and tiene_clave_elector_flexible:
-        return "GM"
+        return "GH"
 
     # Si es INE pero no detectamos la clave elector, lo dejamos como D (tu compatibilidad actual)
     if tiene_ine and tiene_credencial_para_votar:
@@ -322,14 +322,14 @@ def limpiar_y_validar_nombre(nombre: str) -> str:
 
 
 # ============================================================
-# 👤 CORRECCIÓN: EXTRACCIÓN DE NOMBRE PARA TIPO GM
+# 👤 CORRECCIÓN: EXTRACCIÓN DE NOMBRE PARA TIPO GH
 # ============================================================
 def extraer_nombre_mejorado(texts: List[str], tipo_credencial: str) -> str:
     """
     👤 Extrae el nombre completo desde los textos OCR.
 
     ✅ FIX:
-    - En GM el nombre puede venir en 2-3 líneas separadas:
+    - En GH el nombre puede venir en 2-3 líneas separadas:
         NOMBRE
         CASTILLO
         OLIVERA
@@ -345,7 +345,7 @@ def extraer_nombre_mejorado(texts: List[str], tipo_credencial: str) -> str:
 
     # ============================================================
     # ✅ ESTRATEGIA 0 (UNIVERSAL): ANCLA POR "DOMICILIO"
-    # - Funciona MUY bien en INE GM (y en general)
+    # - Funciona MUY bien en INE GH (y en general)
     # - Toma 2-4 líneas antes de DOMICILIO como nombre
     # ============================================================
     idx_dom = None
@@ -385,9 +385,9 @@ def extraer_nombre_mejorado(texts: List[str], tipo_credencial: str) -> str:
                 return nombre_candidato
 
     # ============================================================
-    # 🪪 ESTRATEGIA GM: "NOMBRE" + nombre en varias líneas
+    # 🪪 ESTRATEGIA GH: "NOMBRE" + nombre en varias líneas
     # ============================================================
-    if tipo_credencial == "GM":
+    if tipo_credencial == "GH":
         for i, line in enumerate(textos_limpios):
             up = line.upper().strip()
 
@@ -904,7 +904,7 @@ def health_check():
         "status": "✅ OK", 
         "service": "INE OCR API MEJORADO", 
         "version": "2.0.0",
-        "features": ["Clasificación C/D/GM", "Validación CURP/Clave", "Extracción mejorada"]
+        "features": ["Clasificación C/D/GH", "Validación CURP/Clave", "Extracción mejorada"]
     })
 
 
