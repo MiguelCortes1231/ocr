@@ -25,6 +25,12 @@ from flask import Flask, request, jsonify, send_file
 from flasgger import Swagger
 from flask_cors import CORS
 
+
+
+import requests  # 🆕 Para hacer peticiones HTTP
+import jwt      # 🆕 Para generar tokens JWT
+from functools import wraps  # 🆕 Para decoradores
+
 # ============================================================
 # 🧠 MÓDULOS DE VISIÓN POR COMPUTADORA
 # ============================================================
@@ -45,7 +51,7 @@ import cv2
 import re
 import io
 from typing import Dict, List, Optional, Any, Tuple
-from datetime import datetime
+from datetime import datetime, timedelta 
 
 # ============================================================
 # 🧨 MÓDULOS PARA MANEJO DE CONCURRENCIA
@@ -167,6 +173,277 @@ def _build_ocr_engine() -> PaddleOCR:
         use_textline_orientation=False,  # 🚫 Sin corrección de orientación de texto
         lang="es",  # 🇪🇸 Idioma español
     )
+
+
+
+
+# ============================================================
+# ⚙️ CONFIGURACIÓN JWT
+# ============================================================
+# 🔑 Clave secreta para firmar los JWT (cambia esto en producción)
+JWT_SECRET_KEY = "clave_secreta_super_segura_cambiar_en_produccion"
+# ⏰ Tiempo de expiración del token en minutos
+JWT_EXPIRATION_MINUTES = 100
+# 🔗 URL del API de Laravel
+LARAVEL_API_URL = "https://servdes1.proyectoqroo.com.mx/gsv/ibeta/api/login"
+
+# ============================================================
+# 🔐 DECORADOR PARA AUTENTICACIÓN JWT
+# ============================================================
+def token_required(f):
+    """🔐 Decorador para verificar tokens JWT en los endpoints."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        token = None
+        
+        # 🔍 Buscar token en el header Authorization
+        if 'Authorization' in request.headers:
+            auth_header = request.headers['Authorization']
+            if auth_header.startswith('Bearer '):
+                token = auth_header.split(' ')[1]
+        
+        # 🚫 Si no hay token, retornar error
+        if not token:
+            return jsonify({
+                "error": "❌ Token de autenticación requerido",
+                "message": "Debes incluir un token JWT válido en el header Authorization: Bearer <token>"
+            }), 401
+        
+        try:
+            # 🔍 Verificar y decodificar el token
+            data = jwt.decode(token, JWT_SECRET_KEY, algorithms=["HS256"])
+            # 💾 Guardar información del usuario en el contexto de la petición
+            request.current_user = data
+        except jwt.ExpiredSignatureError:
+            return jsonify({
+                "error": "❌ Token expirado",
+                "message": "El token ha expirado, por favor inicia sesión nuevamente"
+            }), 401
+        except jwt.InvalidTokenError:
+            return jsonify({
+                "error": "❌ Token inválido",
+                "message": "El token proporcionado no es válido"
+            }), 401
+        
+        # ✅ Si todo está bien, ejecutar la función original
+        return f(*args, **kwargs)
+    
+    return decorated
+
+# ... (el resto de tu código existente, mantén todo igual hasta encontrar los endpoints)
+
+# ============================================================
+# 🔐 ENDPOINT DE LOGIN
+# ============================================================
+@app.route("/login", methods=["POST"])
+def login():
+    """
+    🔐 ENDPOINT DE LOGIN - Autenticación contra API Laravel
+    ---
+    tags:
+      - Autenticación
+    consumes:
+      - application/json
+    parameters:
+      - in: body
+        name: credentials
+        required: true
+        schema:
+          type: object
+          required:
+            - username
+            - password
+          properties:
+            username:
+              type: string
+              description: 📧 Nombre de usuario
+              example: "gsvopb"
+            password:
+              type: string
+              description: 🔑 Contraseña
+              example: "gsvopb"
+    responses:
+      200:
+        description: ✅ Login exitoso, retorna tokens JWT y Laravel
+      401:
+        description: ❌ Credenciales incorrectas
+      500:
+        description: ⚠️ Error al conectar con el servidor de autenticación
+    """
+    # 📥 Obtener credenciales del request
+    data = request.get_json()
+    
+    # 🚫 Validar que se enviaron credenciales
+    if not data or 'username' not in data or 'password' not in data:
+        return jsonify({
+            "error": "❌ Credenciales incompletas",
+            "message": "Debes enviar username y password"
+        }), 400
+    
+    username = data['username']
+    password = data['password']
+    
+    # 🚀 Preparar payload para API Laravel
+    laravel_payload = {
+        "username": username,
+        "password": password
+    }
+    
+    try:
+        # 🔗 Hacer petición POST a la API de Laravel
+        response = requests.post(
+            LARAVEL_API_URL,
+            json=laravel_payload,
+            timeout=10  # ⏰ Timeout de 10 segundos
+        )
+        
+        # 🔍 Analizar respuesta de Laravel
+        if response.status_code == 200:
+            laravel_data = response.json()
+            
+            # 📝 Verificar estructura de respuesta esperada
+            if 'token' in laravel_data and 'user' in laravel_data:
+                # 🎯 Crear payload para JWT
+                jwt_payload = {
+                    "user_id": laravel_data['user']['id'],
+                    "username": laravel_data['user']['username'],
+                    "nombre": laravel_data['user']['nombre'],
+                    # ⏰ Agregar fecha de expiración (100 minutos)
+                    "exp": datetime.utcnow() + timedelta(minutes=JWT_EXPIRATION_MINUTES),
+                    # 📅 Agregar fecha de emisión
+                    "iat": datetime.utcnow()
+                }
+                
+                # 🔐 Generar token JWT
+                jwt_token = jwt.encode(jwt_payload, JWT_SECRET_KEY, algorithm="HS256")
+                
+                # ✅ Retornar respuesta exitosa
+                return jsonify({
+                    "message": "✅ Autenticación exitosa",
+                    "token": jwt_token,  # 🔐 Token JWT generado por nosotros
+                    "token_laravel": laravel_data['token'],  # 🔗 Token original de Laravel
+                    "user": laravel_data['user'],  # 👤 Información del usuario
+                    "expires_in": JWT_EXPIRATION_MINUTES * 60  # ⏳ Tiempo de expiración en segundos
+                }), 200
+            else:
+                # ⚠️ Respuesta inesperada de Laravel
+                return jsonify({
+                    "error": "⚠️ Respuesta inesperada del servidor",
+                    "message": "La respuesta del servidor no contiene la estructura esperada"
+                }), 500
+                
+        elif response.status_code == 401:
+            # ❌ Credenciales incorrectas
+            error_data = response.json()
+            return jsonify({
+                "error": "❌ Credenciales incorrectas",
+                "message": error_data.get('message', 'Usuario o contraseña incorrectos')
+            }), 401
+            
+        else:
+            # ⚠️ Otro error del servidor Laravel
+            return jsonify({
+                "error": f"⚠️ Error del servidor (Código: {response.status_code})",
+                "message": "Error al autenticar con el servidor remoto"
+            }), response.status_code
+            
+    except requests.exceptions.Timeout:
+        # ⏰ Timeout en la conexión
+        return jsonify({
+            "error": "⏰ Timeout de conexión",
+            "message": "El servidor de autenticación no responde"
+        }), 504
+        
+    except requests.exceptions.ConnectionError:
+        # 🔌 Error de conexión
+        return jsonify({
+            "error": "🔌 Error de conexión",
+            "message": "No se puede conectar con el servidor de autenticación"
+        }), 503
+        
+    except Exception as e:
+        # ❌ Error general
+        return jsonify({
+            "error": "❌ Error interno",
+            "message": f"Error al procesar la autenticación: {str(e)}"
+        }), 500
+
+# ============================================================
+# 🔐 ENDPOINT VERIFY TOKEN
+# ============================================================
+@app.route("/verify-token", methods=["GET"])
+@token_required  # 🔐 Requiere token válido
+def verify_token():
+    """
+    🔍 ENDPOINT PARA VERIFICAR TOKEN
+    ---
+    tags:
+      - Autenticación
+    security:
+      - BearerAuth: []
+    parameters:
+      - name: Authorization
+        in: header
+        type: string
+        required: true
+        description: 🔐 Token JWT en formato "Bearer {token}"
+    responses:
+      200:
+        description: ✅ Token válido con información del usuario
+      401:
+        description: ❌ Token inválido o expirado
+    """
+    current_user = getattr(request, 'current_user', {})
+    
+    # ⏰ Calcular tiempo restante
+    exp_timestamp = current_user.get('exp', 0)
+    if exp_timestamp:
+        exp_datetime = datetime.fromtimestamp(exp_timestamp)
+        remaining = exp_datetime - datetime.utcnow()
+        remaining_minutes = max(0, int(remaining.total_seconds() / 60))
+    else:
+        remaining_minutes = 0
+    
+    return jsonify({
+        "message": "✅ Token válido",
+        "user": {
+            "user_id": current_user.get('user_id'),
+            "username": current_user.get('username'),
+            "nombre": current_user.get('nombre')
+        },
+        "token_valid": True,
+        "remaining_minutes": remaining_minutes,
+        "expires_at": exp_timestamp
+    }), 200
+
+# ... (el resto de tu código existente)
+
+# ============================================================
+# 🔐 ACTUALIZAR CONFIGURACIÓN DE SWAGGER PARA INCLUIR SECURITY
+# ============================================================
+swagger_template = {
+    "swagger": "2.0",  # 📖 Versión de especificación Swagger
+    "info": {
+        "title": "🪪 INE OCR API MEJORADO 🇲🇽",  # 🏷️ Título de la API
+        "description": "API mejorada para extraer datos de credenciales INE/IFE con validación desde CURP y Clave de Elector\n\n## 🔐 Autenticación\n\nEsta API requiere autenticación JWT. Para usar los endpoints protegidos:\n\n1. Primero obtén un token en `/login`\n2. Incluye el token en el header: `Authorization: Bearer {token}`",  # 📝 Descripción actualizada
+        "version": "2.0.0",  # 🔢 Versión de la API
+    },
+    "basePath": "/",  # 🗺️ Ruta base de los endpoints
+    "schemes": ["http"],  # 🔌 Protocolos soportados
+    "securityDefinitions": {  # 🆕 Definiciones de seguridad
+        "BearerAuth": {
+            "type": "apiKey",
+            "name": "Authorization",
+            "in": "header",
+            "description": "🔐 Ingresa tu token JWT en el formato: Bearer {token}"
+        }
+    },
+    "security": [  # 🆕 Seguridad por defecto (opcional)
+        {
+            "BearerAuth": []
+        }
+    ]
+}
 
 
 # ============================================================
@@ -1012,15 +1289,21 @@ def leer_imagen_desde_request(field_name: str = "imagen") -> Optional[np.ndarray
 # 🚀 ENDPOINT PRINCIPAL OCR MEJORADO
 # ============================================================
 @app.route("/ocr", methods=["POST"])
+@token_required 
 def ocr_anverso_mejorado():
     """
     🪪 ENDPOINT PRINCIPAL: OCR ANVERSO MEJORADO ⭐
     ---
     tags:
       - INE OCR Mejorado
-    consumes:
-      - multipart/form-data
+    security:
+      - BearerAuth: []  # 🆕 Requiere autenticación
     parameters:
+      - name: Authorization
+        in: header
+        type: string
+        required: true
+        description: 🔐 Token JWT en formato "Bearer {token}"
       - name: imagen
         in: formData
         type: file
@@ -1031,9 +1314,14 @@ def ocr_anverso_mejorado():
         description: ✅ Datos extraídos con validación desde CURP/Clave
       400:
         description: ❌ Falta imagen o imagen inválida
+      401:
+        description: 🔒 No autorizado - Token inválido o faltante
       408:
         description: ⏱️ OCR tardó demasiado (timeout)
     """
+    # 🔍 Obtener información del usuario autenticado (opcional, para logging)
+    current_user = getattr(request, 'current_user', {})
+    print(f"🔑 Usuario xautenticado: {current_user.get('username', 'Desconocido')}")
     # 🖼️ 1. LEER IMAGEN DEL REQUEST
     img = leer_imagen_desde_request("imagen")
     if img is None:
