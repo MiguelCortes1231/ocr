@@ -994,7 +994,7 @@ def extraer_campos_ine_mejorado(texts: List[str]) -> Dict[str, Any]:
     tipo_credencial = clasificar_tipo_credencial(textos_limpios)
     
     # 🔍 3. EXTRACCIÓN DE CURP Y CLAVE DE ELECTOR
-    curp_crudo = buscar_en_lista(r'([A-Z]{4}[0-9]{6}[HMX][A-Z]{5,6}[0-9A-Z])', textos_limpios)
+    curp_crudo = buscar_en_lista(r'\b([A-Z]{4}\d{6}[HMX][A-Z]{5}\d{2})\b', textos_limpios)
     clave_elector_crudo = buscar_en_lista(r'\b([A-Z0-9]{18})\b', textos_limpios) or buscar_en_lista(r'\b([A-Z]{6}\d{8,10}[A-Z0-9]{2,4})\b', textos_limpios)
     
     # 🧠 4. VALIDACIÓN DESDE CURP Y CLAVE
